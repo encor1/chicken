@@ -1,0 +1,20 @@
+{
+  "name": "game-io",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @game-io/server",
+    "dev:client": "npm run dev --workspace @game-io/client",
+    "dev:all": "npm run dev --workspace @game-io/server & npm run dev --workspace @game-io/client",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

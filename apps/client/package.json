@@ -1,0 +1,24 @@
+{
+  "name": "@game-io/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "npm run build --workspace @game-io/shared",
+    "dev": "vite --host 0.0.0.0",
+    "prebuild": "npm run build --workspace @game-io/shared",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "pretypecheck": "npm run build --workspace @game-io/shared",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@game-io/shared": "file:../../packages/shared",
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cluckshot.io</title>
+  </head>
+  <body>
+    <form id="start-screen" class="start-screen">
+      <div class="start-panel">
+        <p class="kicker">Multiplayer Shooting Gallery</p>
+        <h1>Cluckshot.io</h1>
+        <label for="player-name">Name</label>
+        <div class="join-row">
+          <input id="player-name" name="player-name" maxlength="16" autocomplete="nickname" placeholder="Spielername" />
+          <button type="submit">Join</button>
+        </div>
+        <p class="hint">Jeder Schuss läuft über den Server. Alle Spieler sehen dieselben Ziele und Treffer live.</p>
+      </div>
+    </form>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
