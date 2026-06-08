@@ -1,6 +1,10 @@
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { WebSocket } from "ws";
 import {
   MAGAZINE_SIZE,
@@ -37,6 +41,7 @@ type Target = TargetSnapshot & {
 };
 
 const app = Fastify({ logger: true });
+const clientDistPath = join(dirname(fileURLToPath(import.meta.url)), "../../client/dist");
 const clients = new Map<string, Client>();
 const players = new Map<string, Player>();
 const targets = new Map<string, Target>();
@@ -98,6 +103,15 @@ app.get("/ws", { websocket: true }, (socket) => {
     players.delete(id);
   });
 });
+
+if (existsSync(clientDistPath)) {
+  await app.register(fastifyStatic, {
+    root: clientDistPath,
+    wildcard: false
+  });
+
+  app.setNotFoundHandler((_request, reply) => reply.sendFile("index.html"));
+}
 
 for (let i = 0; i < MAX_TARGETS; i += 1) {
   spawnTarget(true);

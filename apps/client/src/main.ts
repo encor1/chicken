@@ -91,7 +91,8 @@ class GalleryScene extends Phaser.Scene {
 
   private connect() {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const host = params.get("server") ?? `${window.location.hostname}:3000`;
+    const isViteDevServer = window.location.port === "5173";
+    const host = params.get("server") ?? (isViteDevServer ? `${window.location.hostname}:3000` : window.location.host);
     this.socket = new WebSocket(`${protocol}://${host}/ws`);
 
     this.socket.addEventListener("open", () => {
