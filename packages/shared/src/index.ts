@@ -5,7 +5,7 @@ export const SNAPSHOT_RATE = 20;
 export const MAX_TARGETS = 18;
 export const SHOT_COOLDOWN_MS = 160;
 export const MAGAZINE_SIZE = 6;
-export const RELOAD_DURATION_MS = 1250;
+export const RELOAD_DURATION_MS = 2100;
 
 export type Vec2 = {
   x: number;
