@@ -6,17 +6,20 @@ export const MAX_TARGETS = 18;
 export const SHOT_COOLDOWN_MS = 160;
 export const MAGAZINE_SIZE = 6;
 export const RELOAD_DURATION_MS = 2100;
-export const MAX_POWERUPS = 3;
-export const POWERUP_DURATION_MS = 7000;
+export const MAX_POWERUPS = 4;
+export const POWERUP_DURATION_MS = 8000;
 export const POWERUP_TTL_MS = 11000;
+export const MACHINE_GUN_COOLDOWN_MS = 35;
+export const ROUND_DURATION_MS = 90_000;
+export const ROUND_INTERMISSION_MS = 10_000;
 
 export type Vec2 = {
   x: number;
   y: number;
 };
 
-export type TargetKind = "cluck" | "runner" | "bonus" | "giant";
-export type PowerupKind = "rapid_fire" | "double_points";
+export type TargetKind = "cluck" | "runner" | "bonus" | "giant" | "royal";
+export type PowerupKind = "machine_gun" | "double_points" | "nuke";
 
 export type TargetSnapshot = {
   id: string;
@@ -83,6 +86,28 @@ export type LeaderboardEntry = {
   shots: number;
 };
 
+export type RoundState = "active" | "ended";
+
+export type RoundSnapshot = {
+  number: number;
+  state: RoundState;
+  startedAt: number;
+  endsAt: number;
+  nextRoundStartsAt?: number;
+  winner?: LeaderboardEntry;
+};
+
+export type TauntEvent = {
+  id: string;
+  playerId: string;
+  playerName: string;
+  playerHue: number;
+  text: string;
+  x: number;
+  y: number;
+  createdAt: number;
+};
+
 export type ServerMessage =
   | {
       type: "welcome";
@@ -99,7 +124,9 @@ export type ServerMessage =
       targets: TargetSnapshot[];
       powerups: PowerupSnapshot[];
       shots: ShotEvent[];
+      taunts: TauntEvent[];
       leaderboard: LeaderboardEntry[];
+      round: RoundSnapshot;
     };
 
 export type ClientMessage =
@@ -120,6 +147,9 @@ export type ClientMessage =
       type: "aim";
       x: number;
       y: number;
+    }
+  | {
+      type: "taunt";
     };
 
 export function clamp(value: number, min: number, max: number): number {

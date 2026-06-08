@@ -24,8 +24,19 @@ canvas {
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(rgba(25, 42, 52, 0.42), rgba(25, 42, 52, 0.3)),
-    linear-gradient(#82b8d8 0 70%, #56784a 70% 88%, #8c6239 88%);
+    linear-gradient(180deg, rgba(255, 245, 194, 0.34) 0 16%, transparent 16%),
+    linear-gradient(180deg, #76b7dd 0 54%, #5f8c4a 54% 82%, #8c6239 82%);
+}
+
+.start-screen::before {
+  position: absolute;
+  inset: auto 0 15%;
+  height: 74px;
+  content: "";
+  background:
+    repeating-linear-gradient(90deg, transparent 0 48px, #835735 48px 62px, transparent 62px 128px),
+    linear-gradient(#b97846 0 15px, transparent 15px 38px, #b97846 38px 52px, transparent 52px);
+  opacity: 0.9;
 }
 
 .start-screen.is-hidden {
@@ -33,12 +44,18 @@ canvas {
 }
 
 .start-panel {
+  position: relative;
+  z-index: 1;
   width: min(440px, 100%);
   padding: 28px;
   border: 3px solid #263646;
   border-radius: 8px;
-  background: #f7f1dc;
-  box-shadow: 8px 8px 0 #263646;
+  background:
+    linear-gradient(180deg, rgba(255, 250, 240, 0.92), rgba(247, 241, 220, 0.98)),
+    #f7f1dc;
+  box-shadow:
+    8px 8px 0 #263646,
+    0 18px 40px rgba(24, 35, 44, 0.24);
   color: #263646;
 }
 
@@ -100,6 +117,7 @@ button {
   padding: 0 18px;
   color: #fffaf0;
   background: #c04f3f;
+  box-shadow: inset 0 -4px 0 rgba(24, 35, 44, 0.24);
   cursor: pointer;
 }
 

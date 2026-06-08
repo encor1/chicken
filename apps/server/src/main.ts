@@ -8,11 +8,14 @@ import { fileURLToPath } from "node:url";
 import type { WebSocket } from "ws";
 import {
   MAGAZINE_SIZE,
+  MACHINE_GUN_COOLDOWN_MS,
   MAX_POWERUPS,
   MAX_TARGETS,
   POWERUP_DURATION_MS,
   POWERUP_TTL_MS,
   RELOAD_DURATION_MS,
+  ROUND_DURATION_MS,
+  ROUND_INTERMISSION_MS,
   SHOT_COOLDOWN_MS,
   SNAPSHOT_RATE,
   TICK_RATE,
@@ -24,8 +27,10 @@ import {
   type PlayerSnapshot,
   type PowerupKind,
   type PowerupSnapshot,
+  type RoundSnapshot,
   type ServerMessage,
   type ShotEvent,
+  type TauntEvent,
   type TargetKind,
   type TargetSnapshot
 } from "@game-io/shared";
@@ -37,6 +42,7 @@ type Client = {
 
 type Player = PlayerSnapshot & {
   lastShotAt: number;
+  lastTauntAt: number;
 };
 
 type Target = TargetSnapshot & {
@@ -54,11 +60,14 @@ const players = new Map<string, Player>();
 const targets = new Map<string, Target>();
 const powerups = new Map<string, Powerup>();
 const shots: ShotEvent[] = [];
+const taunts: TauntEvent[] = [];
+let round: RoundSnapshot = createRound(1, Date.now());
 
 let nextPlayerId = 1;
 let nextTargetId = 1;
 let nextPowerupId = 1;
 let nextShotId = 1;
+let nextTauntId = 1;
 
 await app.register(cors, { origin: true });
 await app.register(websocket);
@@ -110,6 +119,11 @@ app.get("/ws", { websocket: true }, (socket) => {
     if (message.type === "aim") {
       current.aimX = clamp(message.x, 0, WORLD_WIDTH);
       current.aimY = clamp(message.y, 0, WORLD_HEIGHT);
+      return;
+    }
+
+    if (message.type === "taunt") {
+      handleTaunt(current);
     }
   });
 
@@ -142,6 +156,8 @@ function stepWorld() {
   const dt = 1 / TICK_RATE;
   const now = Date.now();
 
+  updateRound(now);
+
   for (const player of players.values()) {
     finishReloadIfReady(player, now);
     player.activePowerups = player.activePowerups.filter((powerup) => powerup.expiresAt > now);
@@ -151,6 +167,11 @@ function stepWorld() {
     if (powerup.expiresAt <= now) {
       powerups.delete(id);
     }
+  }
+
+  if (round.state !== "active") {
+    trimEventBuffers();
+    return;
   }
 
   for (const target of targets.values()) {
@@ -173,26 +194,42 @@ function stepWorld() {
     spawnPowerup(now);
   }
 
+  trimEventBuffers();
+}
+
+function trimEventBuffers() {
   const cutoff = Date.now() - 1200;
   while (shots.length > 0 && shots[0].createdAt < cutoff) {
     shots.shift();
+  }
+
+  const tauntCutoff = Date.now() - 3600;
+  while (taunts.length > 0 && taunts[0].createdAt < tauntCutoff) {
+    taunts.shift();
   }
 }
 
 function handleShot(player: Player, x: number, y: number) {
   const now = Date.now();
+  if (round.state !== "active") {
+    return;
+  }
+
   finishReloadIfReady(player, now);
+  const hasMachineGun = hasPowerup(player, "machine_gun", now);
 
   if (now - player.lastShotAt < getShotCooldown(player, now)) {
     return;
   }
-  if (player.reloadEndsAt > now || player.ammo <= 0) {
+  if (!hasMachineGun && (player.reloadEndsAt > now || player.ammo <= 0)) {
     startReload(player, now);
     return;
   }
 
   player.lastShotAt = now;
-  player.ammo -= 1;
+  if (!hasMachineGun) {
+    player.ammo -= 1;
+  }
   player.shots += 1;
 
   const point = {
@@ -205,7 +242,10 @@ function handleShot(player: Player, x: number, y: number) {
   const powerup = findPowerup(point.x, point.y);
   if (powerup) {
     powerups.delete(powerup.id);
-    applyPowerup(player, powerup.kind, now);
+    const nukePoints = powerup.kind === "nuke" ? detonateNuke(player, now) : 0;
+    if (powerup.kind !== "nuke") {
+      applyPowerup(player, powerup.kind, now);
+    }
     shots.push({
       id: `s${nextShotId++}`,
       playerId: player.id,
@@ -214,13 +254,13 @@ function handleShot(player: Player, x: number, y: number) {
       x: point.x,
       y: point.y,
       hit: true,
-      points: 0,
+      points: nukePoints,
       targetId: powerup.id,
       powerupKind: powerup.kind,
       createdAt: now
     });
 
-    if (player.ammo === 0) {
+    if (!hasMachineGun && player.ammo === 0) {
       startReload(player, now);
     }
     return;
@@ -258,7 +298,7 @@ function handleShot(player: Player, x: number, y: number) {
     createdAt: now
   });
 
-  if (player.ammo === 0) {
+  if (!hasMachineGun && player.ammo === 0) {
     startReload(player, now);
   }
 }
@@ -328,7 +368,121 @@ function hasPowerup(player: Player, kind: PowerupKind, now: number) {
 }
 
 function getShotCooldown(player: Player, now: number) {
-  return hasPowerup(player, "rapid_fire", now) ? Math.round(SHOT_COOLDOWN_MS * 0.45) : SHOT_COOLDOWN_MS;
+  return hasPowerup(player, "machine_gun", now) ? MACHINE_GUN_COOLDOWN_MS : SHOT_COOLDOWN_MS;
+}
+
+function detonateNuke(player: Player, now: number) {
+  let points = 0;
+  for (const target of targets.values()) {
+    points += target.points;
+    shots.push({
+      id: `s${nextShotId++}`,
+      playerId: player.id,
+      playerName: player.name,
+      playerHue: player.hue,
+      x: target.x,
+      y: target.y,
+      hit: true,
+      points: target.points,
+      targetId: target.id,
+      createdAt: now
+    });
+  }
+
+  if (hasPowerup(player, "double_points", now)) {
+    points *= 2;
+  }
+
+  targets.clear();
+  player.hits += Math.max(1, MAX_TARGETS);
+  player.streak += Math.max(1, MAX_TARGETS);
+  player.score += points;
+  return points;
+}
+
+function handleTaunt(player: Player) {
+  const now = Date.now();
+  if (now - player.lastTauntAt < 4000) {
+    return;
+  }
+
+  player.lastTauntAt = now;
+  taunts.push({
+    id: `m${nextTauntId++}`,
+    playerId: player.id,
+    playerName: player.name,
+    playerHue: player.hue,
+    text: randomTaunt(),
+    x: player.aimX,
+    y: player.aimY,
+    createdAt: now
+  });
+}
+
+function updateRound(now: number) {
+  if (round.state === "active" && now >= round.endsAt) {
+    endRound(now);
+    return;
+  }
+
+  if (round.state === "ended" && round.nextRoundStartsAt && now >= round.nextRoundStartsAt) {
+    startNextRound(now);
+  }
+}
+
+function endRound(now: number) {
+  const winner = [...players.values()].sort((a, b) => b.score - a.score)[0];
+  round = {
+    ...round,
+    state: "ended",
+    endsAt: now,
+    nextRoundStartsAt: now + ROUND_INTERMISSION_MS,
+    winner: winner
+      ? {
+          id: winner.id,
+          name: winner.name,
+          score: winner.score,
+          hits: winner.hits,
+          shots: winner.shots
+        }
+      : undefined
+  };
+}
+
+function startNextRound(now: number) {
+  round = createRound(round.number + 1, now);
+  targets.clear();
+  powerups.clear();
+  shots.length = 0;
+  taunts.length = 0;
+
+  for (const player of players.values()) {
+    resetPlayerForRound(player);
+  }
+
+  for (let i = 0; i < MAX_TARGETS; i += 1) {
+    spawnTarget(true);
+  }
+}
+
+function createRound(number: number, now: number): RoundSnapshot {
+  return {
+    number,
+    state: "active",
+    startedAt: now,
+    endsAt: now + ROUND_DURATION_MS
+  };
+}
+
+function resetPlayerForRound(player: Player) {
+  player.score = 0;
+  player.shots = 0;
+  player.hits = 0;
+  player.streak = 0;
+  player.ammo = player.magazineSize;
+  player.reloadEndsAt = 0;
+  player.activePowerups = [];
+  player.lastShotAt = 0;
 }
 
 function broadcastSnapshot() {
@@ -350,7 +504,9 @@ function broadcastSnapshot() {
     targets: [...targets.values()].map(({ wobble: _wobble, age: _age, ttl: _ttl, ...target }) => target),
     powerups: [...powerups.values()],
     shots,
-    leaderboard
+    taunts,
+    leaderboard,
+    round
   };
 
   const payload = JSON.stringify(message);
@@ -365,15 +521,18 @@ function spawnTarget(initial: boolean) {
   const kind = randomKind();
   const fromLeft = Math.random() < 0.5;
   const isGiant = kind === "giant";
-  const baseY = isGiant ? WORLD_HEIGHT - 205 - Math.random() * 75 : 90 + Math.random() * (WORLD_HEIGHT - 220);
+  const isRoyal = kind === "royal";
+  const baseY = isGiant || isRoyal ? WORLD_HEIGHT - 230 - Math.random() * 95 : 90 + Math.random() * (WORLD_HEIGHT - 220);
   const speed = isGiant
     ? 95 + Math.random() * 45
-    : kind === "bonus"
+    : isRoyal
+      ? 330 + Math.random() * 80
+      : kind === "bonus"
       ? 300 + Math.random() * 110
       : kind === "runner"
         ? 230 + Math.random() * 90
         : 150 + Math.random() * 80;
-  const radius = isGiant ? 78 : kind === "bonus" ? 18 : kind === "runner" ? 23 : 30;
+  const radius = isGiant ? 78 : isRoyal ? 48 : kind === "bonus" ? 18 : kind === "runner" ? 23 : 30;
   const x = initial ? Math.random() * WORLD_WIDTH : fromLeft ? -radius * 2.4 : WORLD_WIDTH + radius * 2.4;
   const id = `t${nextTargetId++}`;
 
@@ -385,18 +544,22 @@ function spawnTarget(initial: boolean) {
     vx: fromLeft ? speed : -speed,
     vy: 75 + Math.random() * 80,
     radius,
-    points: isGiant ? 75 : kind === "bonus" ? 25 : kind === "runner" ? 15 : 10,
+    points: isRoyal ? 250 : isGiant ? 75 : kind === "bonus" ? 25 : kind === "runner" ? 15 : 10,
     facing: fromLeft ? 1 : -1,
     flap: Math.random() * Math.PI * 2,
     wobble: 2.2 + Math.random() * 2.8,
     age: 0,
-    ttl: isGiant ? 13 + Math.random() * 3 : 7 + Math.random() * 5
+    ttl: isRoyal ? 5.5 + Math.random() * 1.5 : isGiant ? 13 + Math.random() * 3 : 7 + Math.random() * 5
   });
 }
 
 function randomKind(): TargetKind {
   const hasGiant = [...targets.values()].some((target) => target.kind === "giant");
+  const hasRoyal = [...targets.values()].some((target) => target.kind === "royal");
   const roll = Math.random();
+  if (!hasRoyal && roll > 0.992) {
+    return "royal";
+  }
   if (!hasGiant && roll > 0.965) {
     return "giant";
   }
@@ -411,7 +574,7 @@ function randomKind(): TargetKind {
 
 function spawnPowerup(now: number) {
   const margin = 72;
-  const kind: PowerupKind = Math.random() < 0.58 ? "rapid_fire" : "double_points";
+  const kind = randomPowerupKind();
   const id = `u${nextPowerupId++}`;
 
   powerups.set(id, {
@@ -422,6 +585,17 @@ function spawnPowerup(now: number) {
     radius: 28,
     expiresAt: now + POWERUP_TTL_MS
   });
+}
+
+function randomPowerupKind(): PowerupKind {
+  const roll = Math.random();
+  if (roll > 0.82) {
+    return "nuke";
+  }
+  if (roll > 0.48) {
+    return "machine_gun";
+  }
+  return "double_points";
 }
 
 function createPlayer(id: string, name: string): Player {
@@ -439,7 +613,8 @@ function createPlayer(id: string, name: string): Player {
     aimX: WORLD_WIDTH / 2,
     aimY: WORLD_HEIGHT / 2,
     activePowerups: [],
-    lastShotAt: 0
+    lastShotAt: 0,
+    lastTauntAt: 0
   };
 }
 
@@ -463,11 +638,19 @@ function parseMessage(raw: string): ClientMessage | null {
     if (parsed.type === "aim" && typeof parsed.x === "number" && typeof parsed.y === "number") {
       return parsed;
     }
+    if (parsed.type === "taunt") {
+      return parsed;
+    }
   } catch {
     return null;
   }
 
   return null;
+}
+
+function randomTaunt(): string {
+  const options = ["too slow", "nice miss", "my coop now", "reload faster", "easy points", "aim higher"];
+  return options[Math.floor(Math.random() * options.length)];
 }
 
 function send(socket: WebSocket, message: ServerMessage) {

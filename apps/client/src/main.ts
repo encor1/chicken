@@ -10,8 +10,10 @@ import {
   type PlayerSnapshot,
   type PowerupKind,
   type PowerupSnapshot,
+  type RoundSnapshot,
   type ServerMessage,
   type ShotEvent,
+  type TauntEvent,
   type TargetSnapshot
 } from "@game-io/shared";
 import "./styles.css";
@@ -44,6 +46,7 @@ class GalleryScene extends Phaser.Scene {
   private readonly powerups = new Map<string, PowerupView>();
   private readonly remoteCrosshairs = new Map<string, RemoteCrosshairView>();
   private readonly seenShots = new Set<string>();
+  private readonly seenTaunts = new Set<string>();
   private players: PlayerSnapshot[] = [];
   private leaderboardEntries: LeaderboardEntry[] = [];
   private recentHits: string[] = [];
@@ -51,11 +54,22 @@ class GalleryScene extends Phaser.Scene {
   private leaderboardText!: Phaser.GameObjects.Text;
   private feedText!: Phaser.GameObjects.Text;
   private recentText!: Phaser.GameObjects.Text;
+  private roundPanel!: Phaser.GameObjects.Graphics;
+  private roundTitle!: Phaser.GameObjects.Text;
+  private roundSubtitle!: Phaser.GameObjects.Text;
+  private roundMeta!: Phaser.GameObjects.Text;
   private ammoHud!: AmmoHud;
   private crosshair!: Phaser.GameObjects.Graphics;
   private background!: Phaser.GameObjects.Graphics;
+  private sfx!: SoundFx;
   private reloadKey!: Phaser.Input.Keyboard.Key;
+  private tauntKey!: Phaser.Input.Keyboard.Key;
+  private round: RoundSnapshot | null = null;
+  private serverTimeOffset = 0;
+  private lastRoundState = "";
+  private lastRoundNumber = 0;
   private lastAimSentAt = 0;
+  private lastMachineGunSendAt = 0;
 
   create() {
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
@@ -64,16 +78,23 @@ class GalleryScene extends Phaser.Scene {
 
     this.background = this.add.graphics();
     this.drawBackground();
+    this.sfx = new SoundFx();
 
     this.statusText = this.add.text(22, 18, "Connecting...", hudStyle(18, "#f5f7fa", "800")).setDepth(80);
     this.leaderboardText = this.add.text(22, 54, "", hudStyle(14, "#e4ecf2", "700")).setDepth(80);
     this.feedText = this.add.text(WORLD_WIDTH - 22, 18, "", hudStyle(14, "#ffdf91", "700")).setOrigin(1, 0).setDepth(80);
     this.recentText = this.add.text(WORLD_WIDTH - 22, 54, "", hudStyle(13, "#f5f7fa", "700")).setOrigin(1, 0).setDepth(80);
+    this.roundPanel = this.add.graphics().setDepth(86);
+    this.roundTitle = this.add.text(WORLD_WIDTH / 2, 18, "", hudStyle(18, "#fffaf0", "900")).setOrigin(0.5, 0).setDepth(87);
+    this.roundSubtitle = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10, "", hudStyle(28, "#ffdf91", "900")).setOrigin(0.5).setDepth(101);
+    this.roundMeta = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42, "", hudStyle(18, "#f5f7fa", "800")).setOrigin(0.5).setDepth(101);
     this.ammoHud = new AmmoHud(this, WORLD_WIDTH / 2, WORLD_HEIGHT - 84);
 
     this.crosshair = this.add.graphics().setDepth(90);
     this.reloadKey = this.input.keyboard!.addKey("R");
+    this.tauntKey = this.input.keyboard!.addKey("M");
     this.reloadKey.on("down", () => this.reload());
+    this.tauntKey.on("down", () => this.taunt());
     this.input.setDefaultCursor("none");
     this.input.on("pointermove", this.drawCrosshair, this);
     this.input.on("pointerdown", this.shoot, this);
@@ -95,11 +116,13 @@ class GalleryScene extends Phaser.Scene {
 
     this.drawCrosshair(this.input.activePointer);
     this.sendAim(this.input.activePointer);
+    this.renderRound();
     const local = this.players.find((player) => player.id === this.playerId);
     if (local) {
       const accuracy = local.shots > 0 ? Math.round((local.hits / local.shots) * 100) : 0;
       this.statusText.setText(`${local.name}  score ${local.score}  streak ${local.streak}  ${accuracy}%`);
       this.renderAmmo(local);
+      this.fireMachineGunIfHeld(local);
     }
   }
 
@@ -132,11 +155,76 @@ class GalleryScene extends Phaser.Scene {
 
     this.players = message.players;
     this.leaderboardEntries = message.leaderboard;
+    this.serverTimeOffset = message.serverTime - Date.now();
+    this.applyRoundSnapshot(message.round);
     this.renderLeaderboard();
     this.syncTargets(message.targets);
     this.syncPowerups(message.powerups);
     this.syncRemoteCrosshairs(message.players);
     this.renderShots(message.shots);
+    this.renderTaunts(message.taunts);
+  }
+
+  private applyRoundSnapshot(round: RoundSnapshot) {
+    const changed = round.number !== this.lastRoundNumber || round.state !== this.lastRoundState;
+    this.round = round;
+
+    if (changed && this.lastRoundNumber > 0) {
+      if (round.state === "ended") {
+        this.sfx.roundEnd();
+      } else {
+        this.recentHits = [];
+        this.recentText.setText("");
+        this.seenShots.clear();
+        this.seenTaunts.clear();
+        this.sfx.roundStart();
+      }
+    }
+
+    this.lastRoundNumber = round.number;
+    this.lastRoundState = round.state;
+  }
+
+  private renderRound() {
+    if (!this.round) {
+      return;
+    }
+
+    const now = this.serverNow();
+    this.roundPanel.clear();
+
+    if (this.round.state === "active") {
+      const remaining = Math.max(0, this.round.endsAt - now);
+      this.roundPanel.setDepth(86);
+      this.roundTitle.setVisible(true);
+      this.roundTitle.setText(`ROUND ${this.round.number}   ${formatClock(remaining)}`);
+      this.roundSubtitle.setVisible(false);
+      this.roundMeta.setVisible(false);
+      this.roundPanel.fillStyle(0x18232c, 0.74);
+      this.roundPanel.lineStyle(3, remaining < 10_000 ? 0xf25f5c : 0xffdf91, 0.9);
+      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 122, 12, 244, 40, 8);
+      this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 122, 12, 244, 40, 8);
+      return;
+    }
+
+    const nextRoundIn = Math.max(0, (this.round.nextRoundStartsAt ?? now) - now);
+    const winner = this.round.winner;
+    this.roundPanel.setDepth(98);
+    this.roundTitle.setVisible(false);
+    this.roundSubtitle.setVisible(true);
+    this.roundMeta.setVisible(true);
+    this.roundSubtitle.setText(winner ? `${winner.name} wins round ${this.round.number}` : `Round ${this.round.number} complete`);
+    this.roundMeta.setText(winner ? `${winner.score} points  |  next round in ${Math.ceil(nextRoundIn / 1000)}s` : `Next round in ${Math.ceil(nextRoundIn / 1000)}s`);
+    this.roundPanel.fillStyle(0x111820, 0.58);
+    this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    this.roundPanel.fillStyle(0x18232c, 0.92);
+    this.roundPanel.lineStyle(5, 0xffdf91, 0.95);
+    this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+    this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+  }
+
+  private serverNow() {
+    return Date.now() + this.serverTimeOffset;
   }
 
   private syncTargets(snapshot: TargetSnapshot[]) {
@@ -165,8 +253,19 @@ class GalleryScene extends Phaser.Scene {
     for (const shot of fresh) {
       this.seenShots.add(shot.id);
       this.spawnShotFx(shot);
+      if (shot.playerId === this.playerId) {
+        if (shot.powerupKind) {
+          this.sfx.powerup(shot.powerupKind);
+        } else if (shot.hit) {
+          this.sfx.hit(shot.points);
+        } else {
+          this.sfx.miss();
+        }
+      } else if (shot.powerupKind === "nuke") {
+        this.sfx.nuke();
+      }
       if (shot.powerupKind) {
-        this.recentHits.unshift(`${shot.playerName} ${powerupLabel(shot.powerupKind)}`);
+        this.recentHits.unshift(`${shot.playerName} ${powerupLabel(shot.powerupKind)}${shot.points > 0 ? ` +${shot.points}` : ""}`);
         this.recentHits = this.recentHits.slice(0, 5);
       } else if (shot.hit) {
         this.recentHits.unshift(`${shot.playerName} +${shot.points}`);
@@ -178,8 +277,8 @@ class GalleryScene extends Phaser.Scene {
     const localHits = fresh.filter((shot) => shot.playerId === this.playerId && shot.hit);
     if (localHits.length > 0) {
       const latest = localHits.at(-1)!;
-      this.cameras.main.shake(latest.points >= 40 ? 170 : 100, latest.points >= 40 ? 0.0065 : 0.0038);
-      this.feedText.setText(latest.powerupKind ? powerupLabel(latest.powerupKind) : `+${latest.points}`);
+      this.cameras.main.shake(latest.powerupKind === "nuke" ? 360 : latest.points >= 40 ? 170 : 100, latest.powerupKind === "nuke" ? 0.014 : latest.points >= 40 ? 0.0065 : 0.0038);
+      this.feedText.setText(latest.powerupKind ? `${powerupLabel(latest.powerupKind)}${latest.points > 0 ? ` +${latest.points}` : ""}` : `+${latest.points}`);
       this.tweens.add({
         targets: this.feedText,
         alpha: { from: 1, to: 0 },
@@ -207,7 +306,9 @@ class GalleryScene extends Phaser.Scene {
         ).setOrigin(0.5).setDepth(76)
       : null;
 
-    if (shot.powerupKind) {
+    if (shot.powerupKind === "nuke") {
+      this.spawnNukeFx(shot.x, shot.y);
+    } else if (shot.powerupKind) {
       this.spawnPowerupBurst(shot.x, shot.y, color);
     } else if (shot.hit) {
       this.spawnHitBurst(shot.x, shot.y, color, shot.points);
@@ -356,9 +457,63 @@ class GalleryScene extends Phaser.Scene {
     });
   }
 
+  private spawnNukeFx(x: number, y: number) {
+    const flash = this.add.circle(x, y, 80, 0xfff5c2, 0.92).setDepth(94);
+    const shockwave = this.add.circle(x, y, 120, 0xf25f5c, 0).setStrokeStyle(12, 0xfff5c2, 0.98).setDepth(93);
+    const blast = this.add.graphics().setDepth(92);
+
+    blast.fillStyle(0xf25f5c, 0.24);
+    blast.fillCircle(x, y, 540);
+    for (let i = 0; i < 46; i += 1) {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 120 + Math.random() * 440;
+      const spark = this.add.circle(x, y, 5 + Math.random() * 10, 0xffdf91, 1).setDepth(95);
+      this.tweens.add({
+        targets: spark,
+        x: x + Math.cos(angle) * distance,
+        y: y + Math.sin(angle) * distance,
+        alpha: 0,
+        scale: { from: 1.6, to: 0.2 },
+        duration: 520 + Math.random() * 420,
+        ease: "quad.out",
+        onComplete: () => spark.destroy()
+      });
+    }
+
+    this.tweens.add({
+      targets: flash,
+      radius: 300,
+      alpha: 0,
+      duration: 560,
+      ease: "quad.out",
+      onComplete: () => flash.destroy()
+    });
+    this.tweens.add({
+      targets: shockwave,
+      radius: 680,
+      alpha: 0,
+      duration: 780,
+      ease: "quad.out",
+      onComplete: () => shockwave.destroy()
+    });
+    this.tweens.add({
+      targets: blast,
+      alpha: 0,
+      duration: 720,
+      ease: "quad.out",
+      onComplete: () => blast.destroy()
+    });
+  }
+
   private shoot(pointer: Phaser.Input.Pointer) {
+    if (this.round?.state === "ended") {
+      return;
+    }
+
     const local = this.players.find((player) => player.id === this.playerId);
-    if (local && (local.ammo <= 0 || local.reloadEndsAt > Date.now())) {
+    const machineGun = local ? hasActivePowerup(local, "machine_gun", Date.now()) : false;
+    this.sfx.unlock();
+    if (local && !machineGun && (local.ammo <= 0 || local.reloadEndsAt > Date.now())) {
       this.reload();
       return;
     }
@@ -371,7 +526,18 @@ class GalleryScene extends Phaser.Scene {
       y: point.y,
       seq: this.seq++
     });
+    this.sfx.shot(machineGun);
     this.ammoHud.kick();
+  }
+
+  private fireMachineGunIfHeld(local: PlayerSnapshot) {
+    const now = Date.now();
+    if (!this.input.activePointer.isDown || !hasActivePowerup(local, "machine_gun", now) || now - this.lastMachineGunSendAt < 35) {
+      return;
+    }
+
+    this.shoot(this.input.activePointer);
+    this.lastMachineGunSendAt = now;
   }
 
   private spawnMuzzleFlash(x: number, y: number) {
@@ -391,7 +557,13 @@ class GalleryScene extends Phaser.Scene {
   }
 
   private reload() {
+    this.sfx.reload();
     this.send({ type: "reload" });
+  }
+
+  private taunt() {
+    this.sfx.taunt();
+    this.send({ type: "taunt" });
   }
 
   private sendAim(pointer: Phaser.Input.Pointer) {
@@ -474,11 +646,53 @@ class GalleryScene extends Phaser.Scene {
     }
   }
 
+  private renderTaunts(taunts: TauntEvent[]) {
+    const fresh = taunts.filter((taunt) => !this.seenTaunts.has(taunt.id));
+    for (const taunt of fresh) {
+      this.seenTaunts.add(taunt.id);
+      this.recentHits.unshift(`${taunt.playerName}: ${taunt.text}`);
+      this.recentHits = this.recentHits.slice(0, 5);
+      this.spawnTaunt(taunt);
+    }
+    if (fresh.length > 0) {
+      this.recentText.setText(this.recentHits.join("\n"));
+    }
+  }
+
+  private spawnTaunt(taunt: TauntEvent) {
+    if (taunt.playerId !== this.playerId) {
+      this.sfx.taunt();
+    }
+    const label = this.add.text(taunt.x, taunt.y - 48, taunt.text.toUpperCase(), hudStyle(18, "#fffaf0", "900")).setOrigin(0.5).setDepth(92);
+    const bg = this.add.graphics().setDepth(91);
+    const bounds = label.getBounds();
+    bg.fillStyle(colorFromHue(taunt.playerHue), 0.92);
+    bg.lineStyle(3, 0x18232c, 0.95);
+    bg.fillRoundedRect(bounds.x - 10, bounds.y - 5, bounds.width + 20, bounds.height + 10, 8);
+    bg.strokeRoundedRect(bounds.x - 10, bounds.y - 5, bounds.width + 20, bounds.height + 10, 8);
+
+    this.tweens.add({
+      targets: [label, bg],
+      y: "-=34",
+      alpha: 0,
+      duration: 1800,
+      ease: "quad.out",
+      onComplete: () => {
+        label.destroy();
+        bg.destroy();
+      }
+    });
+  }
+
   private drawCrosshair(pointer: Phaser.Input.Pointer) {
     const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     this.crosshair.clear();
+    this.crosshair.lineStyle(5, 0x18232c, 0.38);
+    this.crosshair.strokeCircle(point.x, point.y, 16);
     this.crosshair.lineStyle(2, 0xf7f1dc, 0.95);
     this.crosshair.strokeCircle(point.x, point.y, 13);
+    this.crosshair.lineStyle(2, 0xffdf91, 0.92);
+    this.crosshair.strokeCircle(point.x, point.y, 4);
     this.crosshair.lineBetween(point.x - 22, point.y, point.x - 7, point.y);
     this.crosshair.lineBetween(point.x + 7, point.y, point.x + 22, point.y);
     this.crosshair.lineBetween(point.x, point.y - 22, point.x, point.y - 7);
@@ -487,23 +701,59 @@ class GalleryScene extends Phaser.Scene {
 
   private drawBackground() {
     this.background.clear();
-    this.background.fillStyle(0x82b8d8, 1);
-    this.background.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    this.background.fillStyle(0xcce7f3, 0.9);
-    this.background.fillCircle(180, 96, 52);
-    this.background.fillCircle(224, 92, 76);
-    this.background.fillCircle(282, 112, 50);
-    this.background.fillCircle(920, 74, 64);
-    this.background.fillCircle(990, 82, 88);
-    this.background.fillCircle(1062, 104, 52);
-    this.background.fillStyle(0x56784a, 1);
-    this.background.fillRect(0, WORLD_HEIGHT - 116, WORLD_WIDTH, 116);
-    this.background.fillStyle(0x3f5f37, 1);
-    for (let x = 0; x < WORLD_WIDTH; x += 34) {
-      this.background.fillTriangle(x, WORLD_HEIGHT - 116, x + 18, WORLD_HEIGHT - 158 - Math.random() * 16, x + 38, WORLD_HEIGHT - 116);
+    const skyBands = [0x76b7dd, 0x83c3e4, 0x98d2e8, 0xb9dfec, 0xdbeee9];
+    for (let i = 0; i < skyBands.length; i += 1) {
+      this.background.fillStyle(skyBands[i], 1);
+      this.background.fillRect(0, (WORLD_HEIGHT * 0.7 * i) / skyBands.length, WORLD_WIDTH, WORLD_HEIGHT * 0.7 / skyBands.length + 1);
     }
+
+    this.background.fillStyle(0xffdf91, 1);
+    this.background.fillCircle(1088, 92, 48);
+    this.background.fillStyle(0xfff5c2, 0.6);
+    this.background.fillCircle(1088, 92, 82);
+
+    this.drawCloud(168, 98, 1.06);
+    this.drawCloud(760, 74, 1.22);
+    this.drawCloud(1030, 136, 0.78);
+
+    this.background.fillStyle(0x5b8fa4, 0.55);
+    this.background.fillTriangle(-80, 444, 150, 220, 390, 444);
+    this.background.fillTriangle(230, 444, 510, 176, 820, 444);
+    this.background.fillTriangle(690, 444, 960, 238, 1260, 444);
+    this.background.fillStyle(0x3e7181, 0.46);
+    this.background.fillTriangle(18, 458, 238, 286, 492, 458);
+    this.background.fillTriangle(592, 458, 838, 246, 1120, 458);
+
+    this.background.fillStyle(0x6c934f, 1);
+    this.background.fillRect(0, WORLD_HEIGHT - 154, WORLD_WIDTH, 154);
+    this.background.fillStyle(0x557b40, 1);
+    for (let x = -24; x < WORLD_WIDTH + 24; x += 30) {
+      const height = 42 + ((x * 17) % 29);
+      this.background.fillTriangle(x, WORLD_HEIGHT - 154, x + 17, WORLD_HEIGHT - 154 - height, x + 36, WORLD_HEIGHT - 154);
+    }
+
+    this.background.fillStyle(0x835735, 1);
+    for (let x = 16; x < WORLD_WIDTH; x += 128) {
+      this.background.fillRoundedRect(x, WORLD_HEIGHT - 134, 18, 94, 6);
+    }
+    this.background.fillStyle(0xb97846, 1);
+    this.background.fillRoundedRect(0, WORLD_HEIGHT - 126, WORLD_WIDTH, 16, 8);
+    this.background.fillRoundedRect(0, WORLD_HEIGHT - 88, WORLD_WIDTH, 14, 7);
+
     this.background.fillStyle(0x8c6239, 1);
-    this.background.fillRect(0, WORLD_HEIGHT - 52, WORLD_WIDTH, 52);
+    this.background.fillRect(0, WORLD_HEIGHT - 58, WORLD_WIDTH, 58);
+    this.background.fillStyle(0x6f4a2d, 0.55);
+    for (let x = 0; x < WORLD_WIDTH; x += 46) {
+      this.background.fillEllipse(x + 18, WORLD_HEIGHT - 24, 54, 8);
+    }
+  }
+
+  private drawCloud(x: number, y: number, scale: number) {
+    this.background.fillStyle(0xf4fbff, 0.72);
+    this.background.fillCircle(x, y + 12 * scale, 42 * scale);
+    this.background.fillCircle(x + 48 * scale, y, 58 * scale);
+    this.background.fillCircle(x + 106 * scale, y + 16 * scale, 38 * scale);
+    this.background.fillCircle(x + 72 * scale, y + 26 * scale, 52 * scale);
   }
 
   private resizeGame(size: Phaser.Structs.Size) {
@@ -517,7 +767,9 @@ class PowerupView {
   private readonly group: Phaser.GameObjects.Container;
   private readonly halo: Phaser.GameObjects.Arc;
   private readonly core: Phaser.GameObjects.Arc;
+  private readonly star: Phaser.GameObjects.Star;
   private readonly icon: Phaser.GameObjects.Text;
+  private readonly label: Phaser.GameObjects.Text;
   private readonly timer: Phaser.GameObjects.Graphics;
   private target: PowerupSnapshot;
   private age = 0;
@@ -527,11 +779,14 @@ class PowerupView {
     const color = powerupColor(snapshot.kind);
 
     this.halo = scene.add.circle(0, 0, snapshot.radius + 8, color, 0.18).setStrokeStyle(4, color, 0.85);
+    this.star = scene.add.star(0, 0, 8, snapshot.radius * 0.78, snapshot.radius * 1.42, color, 0.34);
     this.core = scene.add.circle(0, 0, snapshot.radius, 0x18232c, 0.86).setStrokeStyle(4, color, 1);
-    this.icon = scene.add.text(0, -1, snapshot.kind === "rapid_fire" ? ">>" : "x2", hudStyle(18, "#fffaf0", "900")).setOrigin(0.5);
+    this.icon = scene.add.text(0, -1, powerupIcon(snapshot.kind), hudStyle(18, "#fffaf0", "900")).setOrigin(0.5);
+    this.label = scene.add.text(0, snapshot.radius + 24, powerupLabel(snapshot.kind).toUpperCase(), hudStyle(11, "#fffaf0", "900")).setOrigin(0.5);
     this.icon.setResolution(2);
+    this.label.setResolution(2);
     this.timer = scene.add.graphics();
-    this.group = scene.add.container(snapshot.x, snapshot.y, [this.halo, this.core, this.icon, this.timer]).setDepth(55);
+    this.group = scene.add.container(snapshot.x, snapshot.y, [this.halo, this.star, this.core, this.icon, this.label, this.timer]).setDepth(55);
   }
 
   applySnapshot(snapshot: PowerupSnapshot) {
@@ -545,6 +800,8 @@ class PowerupView {
     this.group.x = Phaser.Math.Linear(this.group.x, this.target.x, t);
     this.group.y = Phaser.Math.Linear(this.group.y, this.target.y, t);
     this.halo.setScale(pulse);
+    this.star.setAngle(this.star.angle + delta * 0.06);
+    this.star.setScale(1 + Math.sin(this.age * 4.2) * 0.06);
     this.icon.setAngle(Math.sin(this.age * 3.2) * 4);
 
     const remaining = Phaser.Math.Clamp((this.target.expiresAt - Date.now()) / POWERUP_TTL_MS, 0, 1);
@@ -608,6 +865,150 @@ class RemoteCrosshairView {
   }
 }
 
+class SoundFx {
+  private ctx: AudioContext | null = null;
+  private ambientStarted = false;
+  private lastShotAt = 0;
+
+  unlock() {
+    this.ctx ??= new AudioContext();
+    if (this.ctx.state !== "running") {
+      void this.ctx.resume();
+    }
+    if (!this.ambientStarted) {
+      this.startAmbience();
+      this.ambientStarted = true;
+    }
+  }
+
+  shot(machineGun: boolean) {
+    this.unlock();
+    const now = performance.now();
+    if (machineGun && now - this.lastShotAt < 26) {
+      return;
+    }
+    this.lastShotAt = now;
+    this.noise(machineGun ? 0.028 : 0.055, machineGun ? 0.035 : 0.07, machineGun ? 520 : 190);
+    this.tone(machineGun ? 210 : 125, machineGun ? 0.035 : 0.08, "square", machineGun ? 0.045 : 0.07, 0, machineGun ? 92 : 55);
+  }
+
+  hit(points: number) {
+    this.unlock();
+    const big = points >= 75;
+    this.tone(big ? 620 : 460, 0.08, "triangle", 0.06);
+    this.tone(big ? 930 : 720, 0.12, "sine", 0.05, 0.055);
+    if (big) {
+      this.noise(0.08, 0.12, 1200, 0.025);
+    }
+  }
+
+  miss() {
+    this.unlock();
+    this.noise(0.035, 0.05, 900);
+  }
+
+  powerup(kind: PowerupKind) {
+    this.unlock();
+    if (kind === "nuke") {
+      this.nuke();
+      return;
+    }
+    const base = kind === "machine_gun" ? 260 : 520;
+    this.tone(base, 0.1, "sawtooth", 0.055);
+    this.tone(base * 1.5, 0.16, "triangle", 0.052, 0.08);
+    this.tone(base * 2, 0.18, "sine", 0.04, 0.18);
+  }
+
+  nuke() {
+    this.unlock();
+    this.noise(0.42, 0.24, 90);
+    this.tone(72, 0.48, "sawtooth", 0.18);
+    this.tone(44, 0.64, "square", 0.09, 0.08);
+  }
+
+  reload() {
+    this.unlock();
+    this.tone(180, 0.05, "triangle", 0.04);
+    this.tone(230, 0.04, "triangle", 0.035, 0.16);
+    this.noise(0.03, 0.05, 700, 0.08);
+  }
+
+  taunt() {
+    this.unlock();
+    this.tone(360, 0.08, "square", 0.045);
+    this.tone(260, 0.09, "square", 0.04, 0.09);
+  }
+
+  roundStart() {
+    this.unlock();
+    this.tone(330, 0.1, "triangle", 0.055);
+    this.tone(495, 0.12, "triangle", 0.055, 0.1);
+    this.tone(660, 0.18, "sine", 0.05, 0.22);
+  }
+
+  roundEnd() {
+    this.unlock();
+    this.tone(520, 0.16, "sawtooth", 0.055);
+    this.tone(390, 0.22, "triangle", 0.05, 0.12);
+    this.noise(0.18, 0.08, 440, 0.05);
+  }
+
+  private startAmbience() {
+    this.tone(110, 4.2, "sine", 0.012);
+    this.tone(147, 5.2, "sine", 0.008, 0.2);
+  }
+
+  private tone(frequency: number, duration: number, type: OscillatorType, gain: number, delay = 0, slide = 0) {
+    if (!this.ctx) {
+      return;
+    }
+
+    const start = this.ctx.currentTime + delay;
+    const oscillator = this.ctx.createOscillator();
+    const envelope = this.ctx.createGain();
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, start);
+    if (slide !== 0) {
+      oscillator.frequency.exponentialRampToValueAtTime(Math.max(20, frequency + slide), start + duration);
+    }
+    envelope.gain.setValueAtTime(0.0001, start);
+    envelope.gain.exponentialRampToValueAtTime(gain, start + 0.012);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+    oscillator.connect(envelope);
+    envelope.connect(this.ctx.destination);
+    oscillator.start(start);
+    oscillator.stop(start + duration + 0.02);
+  }
+
+  private noise(duration: number, gain: number, cutoff: number, delay = 0) {
+    if (!this.ctx) {
+      return;
+    }
+
+    const start = this.ctx.currentTime + delay;
+    const sampleCount = Math.max(1, Math.floor(this.ctx.sampleRate * duration));
+    const buffer = this.ctx.createBuffer(1, sampleCount, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < sampleCount; i += 1) {
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    const source = this.ctx.createBufferSource();
+    const filter = this.ctx.createBiquadFilter();
+    const envelope = this.ctx.createGain();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(cutoff, start);
+    envelope.gain.setValueAtTime(gain, start);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+    source.buffer = buffer;
+    source.connect(filter);
+    filter.connect(envelope);
+    envelope.connect(this.ctx.destination);
+    source.start(start);
+    source.stop(start + duration);
+  }
+}
+
 class AmmoHud {
   private readonly scene: Phaser.Scene;
   private readonly root: Phaser.GameObjects.Container;
@@ -617,7 +1018,8 @@ class AmmoHud {
   private readonly reloadShell: Phaser.GameObjects.Container;
   private readonly progress: Phaser.GameObjects.Graphics;
   private readonly status: Phaser.GameObjects.Text;
-  private readonly powerups: Phaser.GameObjects.Text;
+  private readonly buffPanel: Phaser.GameObjects.Graphics;
+  private readonly buffText: Phaser.GameObjects.Text;
   private lastAmmo = -1;
   private wasReloading = false;
   private lastReloadSlot = -1;
@@ -629,14 +1031,15 @@ class AmmoHud {
     this.shotgun = scene.add.graphics();
     this.progress = scene.add.graphics();
     this.status = scene.add.text(0, 58, "R RELOAD", hudStyle(14, "#f7f1dc", "900")).setOrigin(0.5);
-    this.powerups = scene.add.text(0, 104, "", hudStyle(14, "#ffdf91", "900")).setOrigin(0.5);
+    this.buffPanel = scene.add.graphics();
+    this.buffText = scene.add.text(0, -126, "", hudStyle(15, "#fffaf0", "900")).setOrigin(0.5);
     this.status.setResolution(2);
-    this.powerups.setResolution(2);
+    this.buffText.setResolution(2);
     this.reloadShell = this.createLooseShell();
 
     this.drawShotgun();
     this.weapon.add(this.shotgun);
-    this.root.add([this.weapon, this.progress, this.status, this.powerups, this.reloadShell]);
+    this.root.add([this.buffPanel, this.weapon, this.progress, this.status, this.buffText, this.reloadShell]);
 
     for (let i = 0; i < 6; i += 1) {
       const shell = this.createShell(i);
@@ -657,7 +1060,7 @@ class AmmoHud {
     const activePowerups = player.activePowerups
       .filter((powerup) => powerup.expiresAt > now)
       .map((powerup) => `${powerupLabel(powerup.kind)} ${Math.ceil((powerup.expiresAt - now) / 1000)}s`);
-    this.powerups.setText(activePowerups.join("   "));
+    this.renderBuffMonitor(activePowerups);
 
     if (player.ammo < this.lastAmmo) {
       this.kick();
@@ -692,6 +1095,26 @@ class AmmoHud {
 
     this.lastReloadSlot = -1;
     this.status.setText("R RELOAD");
+  }
+
+  private renderBuffMonitor(activePowerups: string[]) {
+    this.buffPanel.clear();
+    if (activePowerups.length === 0) {
+      this.buffText.setText("BUFFS  none");
+      this.buffPanel.fillStyle(0x18232c, 0.68);
+      this.buffPanel.lineStyle(2, 0xf7f1dc, 0.28);
+      this.buffPanel.fillRoundedRect(-120, -144, 240, 38, 8);
+      this.buffPanel.strokeRoundedRect(-120, -144, 240, 38, 8);
+      return;
+    }
+
+    const text = `BUFFS  ${activePowerups.join("   ")}`;
+    const width = Math.min(560, Math.max(260, text.length * 9.5));
+    this.buffText.setText(text);
+    this.buffPanel.fillStyle(0x18232c, 0.86);
+    this.buffPanel.lineStyle(4, 0xffdf91, 0.92);
+    this.buffPanel.fillRoundedRect(-width / 2, -148, width, 46, 8);
+    this.buffPanel.strokeRoundedRect(-width / 2, -148, width, 46, 8);
   }
 
   kick() {
@@ -829,6 +1252,7 @@ class TargetView {
     this.wingA = scene.add.ellipse(-8, -7, snapshot.radius * 1.05, snapshot.radius * 0.48, palette.wing);
     this.wingB = scene.add.ellipse(8, -7, snapshot.radius * 1.05, snapshot.radius * 0.48, palette.wing);
     this.head = scene.add.ellipse(snapshot.radius * 0.68, -snapshot.radius * 0.22, snapshot.radius * 0.72, snapshot.radius * 0.62, palette.body);
+    const highlight = scene.add.ellipse(snapshot.radius * 0.18, -snapshot.radius * 0.18, snapshot.radius * 0.72, snapshot.radius * 0.22, 0xffffff, 0.28);
     this.eye = scene.add.circle(snapshot.radius * 0.82, -snapshot.radius * 0.32, Math.max(2.8, snapshot.radius * 0.08), 0x18232c, 1);
     this.beak = scene.add.triangle(snapshot.radius * 1.08, -snapshot.radius * 0.2, 0, 0, 14, 6, 0, 12, 0xf0b429);
     this.tail.setStrokeStyle(2, 0x18232c, 0.8);
@@ -840,10 +1264,18 @@ class TargetView {
     const signY = snapshot.radius + Math.max(18, snapshot.radius * 0.36);
     this.badge = scene.add.ellipse(0, signY, Math.max(52, snapshot.radius * 1.25), Math.max(30, snapshot.radius * 0.5), 0xffdf91, 1);
     this.badge.setStrokeStyle(4, 0x18232c, 1);
-    this.label = scene.add.text(0, signY, `${snapshot.points}`, scoreStyle(snapshot.kind === "giant" ? 28 : 20)).setOrigin(0.5);
+    this.label = scene.add.text(0, signY, `${snapshot.points}`, scoreStyle(snapshot.kind === "royal" ? 26 : snapshot.kind === "giant" ? 28 : 20)).setOrigin(0.5);
     this.label.setResolution(2);
-    this.group = scene.add.container(snapshot.x, snapshot.y, [this.shadow, this.tail, this.wingA, this.wingB, this.body, this.head, this.eye, this.beak, this.badge, this.label]).setDepth(snapshot.kind === "giant" ? 45 : 20);
+    this.group = scene.add.container(snapshot.x, snapshot.y, [this.shadow, this.tail, this.wingA, this.wingB, this.body, highlight, this.head, this.eye, this.beak, this.badge, this.label]).setDepth(snapshot.kind === "giant" || snapshot.kind === "royal" ? 45 : 20);
     this.group.scaleX = snapshot.facing;
+
+    if (snapshot.kind === "royal") {
+      const aura = scene.add.circle(0, 0, snapshot.radius * 1.25, 0xffdf91, 0).setStrokeStyle(5, 0xffdf91, 0.5);
+      const crown = scene.add.triangle(snapshot.radius * 0.48, -snapshot.radius * 0.72, 0, 18, 12, -12, 25, 18, 0xffdf91, 1);
+      crown.setStrokeStyle(2, 0x18232c, 0.95);
+      this.group.addAt(aura, 1);
+      this.group.add(crown);
+    }
   }
 
   applySnapshot(snapshot: TargetSnapshot) {
@@ -868,6 +1300,9 @@ class TargetView {
 }
 
 function paletteFor(kind: TargetSnapshot["kind"]) {
+  if (kind === "royal") {
+    return { body: 0xffdf91, wing: 0x7b2cbf };
+  }
   if (kind === "giant") {
     return { body: 0xffdf91, wing: 0xc04f3f };
   }
@@ -905,11 +1340,44 @@ function colorFromHue(hue: number): number {
 }
 
 function powerupColor(kind: PowerupKind): number {
-  return kind === "rapid_fire" ? 0xf25f5c : 0xffc857;
+  if (kind === "machine_gun") {
+    return 0xf25f5c;
+  }
+  if (kind === "nuke") {
+    return 0xb7f7ef;
+  }
+  return 0xffc857;
 }
 
 function powerupLabel(kind: PowerupKind): string {
-  return kind === "rapid_fire" ? "Rapid fire" : "Double points";
+  if (kind === "machine_gun") {
+    return "Machine gun";
+  }
+  if (kind === "nuke") {
+    return "Nuke";
+  }
+  return "Double points";
+}
+
+function powerupIcon(kind: PowerupKind): string {
+  if (kind === "machine_gun") {
+    return "MG";
+  }
+  if (kind === "nuke") {
+    return "!";
+  }
+  return "x2";
+}
+
+function hasActivePowerup(player: PlayerSnapshot, kind: PowerupKind, now: number): boolean {
+  return player.activePowerups.some((powerup) => powerup.kind === kind && powerup.expiresAt > now);
+}
+
+function formatClock(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function startGame() {
