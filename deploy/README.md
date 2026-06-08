@@ -28,7 +28,7 @@ git init
 git remote add origin https://github.com/OWNER/REPOSITORY.git
 git sparse-checkout init --cone
 git sparse-checkout set deploy
-git pull origin main
+git pull origin master
 ```
 
 For a private repo, use an SSH remote or an HTTPS token URL instead.
@@ -60,7 +60,7 @@ To deploy a new image after GitHub Actions completes:
 
 ```bash
 cd /opt/moorhuhn
-git pull origin main
+git pull origin master
 cd deploy
 docker compose pull
 docker compose up -d
