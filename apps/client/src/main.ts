@@ -1,11 +1,15 @@
 import Phaser from "phaser";
 import {
+  POWERUP_DURATION_MS,
+  POWERUP_TTL_MS,
   RELOAD_DURATION_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
   type ClientMessage,
   type LeaderboardEntry,
   type PlayerSnapshot,
+  type PowerupKind,
+  type PowerupSnapshot,
   type ServerMessage,
   type ShotEvent,
   type TargetSnapshot
@@ -37,6 +41,8 @@ class GalleryScene extends Phaser.Scene {
   private playerId = "";
   private seq = 0;
   private readonly targets = new Map<string, TargetView>();
+  private readonly powerups = new Map<string, PowerupView>();
+  private readonly remoteCrosshairs = new Map<string, RemoteCrosshairView>();
   private readonly seenShots = new Set<string>();
   private players: PlayerSnapshot[] = [];
   private leaderboardEntries: LeaderboardEntry[] = [];
@@ -49,6 +55,7 @@ class GalleryScene extends Phaser.Scene {
   private crosshair!: Phaser.GameObjects.Graphics;
   private background!: Phaser.GameObjects.Graphics;
   private reloadKey!: Phaser.Input.Keyboard.Key;
+  private lastAimSentAt = 0;
 
   create() {
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
@@ -79,8 +86,15 @@ class GalleryScene extends Phaser.Scene {
     for (const target of this.targets.values()) {
       target.update(delta);
     }
+    for (const powerup of this.powerups.values()) {
+      powerup.update(delta);
+    }
+    for (const crosshair of this.remoteCrosshairs.values()) {
+      crosshair.update(delta);
+    }
 
     this.drawCrosshair(this.input.activePointer);
+    this.sendAim(this.input.activePointer);
     const local = this.players.find((player) => player.id === this.playerId);
     if (local) {
       const accuracy = local.shots > 0 ? Math.round((local.hits / local.shots) * 100) : 0;
@@ -120,6 +134,8 @@ class GalleryScene extends Phaser.Scene {
     this.leaderboardEntries = message.leaderboard;
     this.renderLeaderboard();
     this.syncTargets(message.targets);
+    this.syncPowerups(message.powerups);
+    this.syncRemoteCrosshairs(message.players);
     this.renderShots(message.shots);
   }
 
@@ -149,7 +165,10 @@ class GalleryScene extends Phaser.Scene {
     for (const shot of fresh) {
       this.seenShots.add(shot.id);
       this.spawnShotFx(shot);
-      if (shot.hit) {
+      if (shot.powerupKind) {
+        this.recentHits.unshift(`${shot.playerName} ${powerupLabel(shot.powerupKind)}`);
+        this.recentHits = this.recentHits.slice(0, 5);
+      } else if (shot.hit) {
         this.recentHits.unshift(`${shot.playerName} +${shot.points}`);
         this.recentHits = this.recentHits.slice(0, 5);
       }
@@ -160,7 +179,7 @@ class GalleryScene extends Phaser.Scene {
     if (localHits.length > 0) {
       const latest = localHits.at(-1)!;
       this.cameras.main.shake(latest.points >= 40 ? 170 : 100, latest.points >= 40 ? 0.0065 : 0.0038);
-      this.feedText.setText(`+${latest.points}`);
+      this.feedText.setText(latest.powerupKind ? powerupLabel(latest.powerupKind) : `+${latest.points}`);
       this.tweens.add({
         targets: this.feedText,
         alpha: { from: 1, to: 0 },
@@ -177,13 +196,20 @@ class GalleryScene extends Phaser.Scene {
   }
 
   private spawnShotFx(shot: ShotEvent) {
-    const color = shot.hit ? colorFromHue(shot.playerHue) : 0xd6e2ea;
+    const color = shot.powerupKind ? powerupColor(shot.powerupKind) : shot.hit ? colorFromHue(shot.playerHue) : 0xd6e2ea;
     const ring = this.add.circle(shot.x, shot.y, shot.hit ? 18 : 10, color, 0).setStrokeStyle(shot.hit ? 5 : 3, color, 0.95).setDepth(70);
     const label = shot.hit
-      ? this.add.text(shot.x, shot.y - 34, `${shot.playerName} +${shot.points}`, hudStyle(shot.points >= 40 ? 24 : 18, "#ffdf91", "900")).setOrigin(0.5).setDepth(76)
+      ? this.add.text(
+          shot.x,
+          shot.y - 34,
+          shot.powerupKind ? powerupLabel(shot.powerupKind) : `${shot.playerName} +${shot.points}`,
+          hudStyle(shot.points >= 40 || shot.powerupKind ? 24 : 18, "#ffdf91", "900")
+        ).setOrigin(0.5).setDepth(76)
       : null;
 
-    if (shot.hit) {
+    if (shot.powerupKind) {
+      this.spawnPowerupBurst(shot.x, shot.y, color);
+    } else if (shot.hit) {
       this.spawnHitBurst(shot.x, shot.y, color, shot.points);
       this.spawnFeathers(shot.x, shot.y, shot.points >= 40 ? 30 : 16);
       this.spawnScoreCoins(shot.x, shot.y, shot.points >= 40 ? 9 : 4);
@@ -302,6 +328,34 @@ class GalleryScene extends Phaser.Scene {
     }
   }
 
+  private spawnPowerupBurst(x: number, y: number, color: number) {
+    const flash = this.add.circle(x, y, 34, color, 0.78).setDepth(74);
+    const rays = this.add.graphics().setDepth(75);
+    rays.lineStyle(5, color, 0.95);
+
+    for (let i = 0; i < 16; i += 1) {
+      const angle = (Math.PI * 2 * i) / 16;
+      rays.lineBetween(x + Math.cos(angle) * 18, y + Math.sin(angle) * 18, x + Math.cos(angle) * 82, y + Math.sin(angle) * 82);
+    }
+
+    this.tweens.add({
+      targets: flash,
+      radius: 70,
+      alpha: 0,
+      duration: 360,
+      ease: "quad.out",
+      onComplete: () => flash.destroy()
+    });
+    this.tweens.add({
+      targets: rays,
+      scale: 1.25,
+      alpha: 0,
+      duration: 520,
+      ease: "quad.out",
+      onComplete: () => rays.destroy()
+    });
+  }
+
   private shoot(pointer: Phaser.Input.Pointer) {
     const local = this.players.find((player) => player.id === this.playerId);
     if (local && (local.ammo <= 0 || local.reloadEndsAt > Date.now())) {
@@ -340,6 +394,21 @@ class GalleryScene extends Phaser.Scene {
     this.send({ type: "reload" });
   }
 
+  private sendAim(pointer: Phaser.Input.Pointer) {
+    const now = Date.now();
+    if (now - this.lastAimSentAt < 70) {
+      return;
+    }
+
+    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    this.send({
+      type: "aim",
+      x: point.x,
+      y: point.y
+    });
+    this.lastAimSentAt = now;
+  }
+
   private send(message: ClientMessage) {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message));
@@ -357,6 +426,52 @@ class GalleryScene extends Phaser.Scene {
 
   private renderAmmo(local: PlayerSnapshot) {
     this.ammoHud.render(local, Date.now());
+  }
+
+  private syncPowerups(snapshot: PowerupSnapshot[]) {
+    const seen = new Set<string>();
+
+    for (const powerup of snapshot) {
+      seen.add(powerup.id);
+      let view = this.powerups.get(powerup.id);
+      if (!view) {
+        view = new PowerupView(this, powerup);
+        this.powerups.set(powerup.id, view);
+      }
+      view.applySnapshot(powerup);
+    }
+
+    for (const [id, powerup] of this.powerups) {
+      if (!seen.has(id)) {
+        powerup.destroy();
+        this.powerups.delete(id);
+      }
+    }
+  }
+
+  private syncRemoteCrosshairs(players: PlayerSnapshot[]) {
+    const seen = new Set<string>();
+
+    for (const player of players) {
+      if (player.id === this.playerId) {
+        continue;
+      }
+
+      seen.add(player.id);
+      let view = this.remoteCrosshairs.get(player.id);
+      if (!view) {
+        view = new RemoteCrosshairView(this, player);
+        this.remoteCrosshairs.set(player.id, view);
+      }
+      view.applySnapshot(player);
+    }
+
+    for (const [id, crosshair] of this.remoteCrosshairs) {
+      if (!seen.has(id)) {
+        crosshair.destroy();
+        this.remoteCrosshairs.delete(id);
+      }
+    }
   }
 
   private drawCrosshair(pointer: Phaser.Input.Pointer) {
@@ -398,6 +513,101 @@ class GalleryScene extends Phaser.Scene {
   }
 }
 
+class PowerupView {
+  private readonly group: Phaser.GameObjects.Container;
+  private readonly halo: Phaser.GameObjects.Arc;
+  private readonly core: Phaser.GameObjects.Arc;
+  private readonly icon: Phaser.GameObjects.Text;
+  private readonly timer: Phaser.GameObjects.Graphics;
+  private target: PowerupSnapshot;
+  private age = 0;
+
+  constructor(scene: Phaser.Scene, snapshot: PowerupSnapshot) {
+    this.target = snapshot;
+    const color = powerupColor(snapshot.kind);
+
+    this.halo = scene.add.circle(0, 0, snapshot.radius + 8, color, 0.18).setStrokeStyle(4, color, 0.85);
+    this.core = scene.add.circle(0, 0, snapshot.radius, 0x18232c, 0.86).setStrokeStyle(4, color, 1);
+    this.icon = scene.add.text(0, -1, snapshot.kind === "rapid_fire" ? ">>" : "x2", hudStyle(18, "#fffaf0", "900")).setOrigin(0.5);
+    this.icon.setResolution(2);
+    this.timer = scene.add.graphics();
+    this.group = scene.add.container(snapshot.x, snapshot.y, [this.halo, this.core, this.icon, this.timer]).setDepth(55);
+  }
+
+  applySnapshot(snapshot: PowerupSnapshot) {
+    this.target = snapshot;
+  }
+
+  update(delta: number) {
+    this.age += delta / 1000;
+    const t = Math.min(1, delta / 80);
+    const pulse = 1 + Math.sin(this.age * 5.4) * 0.08;
+    this.group.x = Phaser.Math.Linear(this.group.x, this.target.x, t);
+    this.group.y = Phaser.Math.Linear(this.group.y, this.target.y, t);
+    this.halo.setScale(pulse);
+    this.icon.setAngle(Math.sin(this.age * 3.2) * 4);
+
+    const remaining = Phaser.Math.Clamp((this.target.expiresAt - Date.now()) / POWERUP_TTL_MS, 0, 1);
+    const color = powerupColor(this.target.kind);
+    this.timer.clear();
+    this.timer.lineStyle(4, 0xf7f1dc, 0.25);
+    this.timer.strokeCircle(0, 0, this.target.radius + 16);
+    this.timer.lineStyle(4, color, 0.95);
+    this.timer.beginPath();
+    this.timer.arc(0, 0, this.target.radius + 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * remaining, false);
+    this.timer.strokePath();
+  }
+
+  destroy() {
+    this.group.destroy(true);
+  }
+}
+
+class RemoteCrosshairView {
+  private readonly group: Phaser.GameObjects.Container;
+  private readonly crosshair: Phaser.GameObjects.Graphics;
+  private readonly label: Phaser.GameObjects.Text;
+  private target: PlayerSnapshot;
+
+  constructor(scene: Phaser.Scene, snapshot: PlayerSnapshot) {
+    this.target = snapshot;
+    this.crosshair = scene.add.graphics();
+    this.label = scene.add.text(0, 22, snapshot.name, hudStyle(12, "#f5f7fa", "800")).setOrigin(0.5, 0);
+    this.label.setResolution(2);
+    this.group = scene.add.container(snapshot.aimX, snapshot.aimY, [this.crosshair, this.label]).setDepth(89).setAlpha(0.74);
+    this.draw();
+  }
+
+  applySnapshot(snapshot: PlayerSnapshot) {
+    this.target = snapshot;
+    this.label.setText(snapshot.name);
+    this.draw();
+  }
+
+  update(delta: number) {
+    const t = Math.min(1, delta / 65);
+    this.group.x = Phaser.Math.Linear(this.group.x, this.target.aimX, t);
+    this.group.y = Phaser.Math.Linear(this.group.y, this.target.aimY, t);
+  }
+
+  destroy() {
+    this.group.destroy(true);
+  }
+
+  private draw() {
+    const color = colorFromHue(this.target.hue);
+    this.crosshair.clear();
+    this.crosshair.lineStyle(3, color, 0.9);
+    this.crosshair.strokeCircle(0, 0, 10);
+    this.crosshair.lineBetween(-19, 0, -7, 0);
+    this.crosshair.lineBetween(7, 0, 19, 0);
+    this.crosshair.lineBetween(0, -19, 0, -7);
+    this.crosshair.lineBetween(0, 7, 0, 19);
+    this.crosshair.fillStyle(color, 0.82);
+    this.crosshair.fillCircle(0, 0, 2.5);
+  }
+}
+
 class AmmoHud {
   private readonly scene: Phaser.Scene;
   private readonly root: Phaser.GameObjects.Container;
@@ -407,6 +617,7 @@ class AmmoHud {
   private readonly reloadShell: Phaser.GameObjects.Container;
   private readonly progress: Phaser.GameObjects.Graphics;
   private readonly status: Phaser.GameObjects.Text;
+  private readonly powerups: Phaser.GameObjects.Text;
   private lastAmmo = -1;
   private wasReloading = false;
   private lastReloadSlot = -1;
@@ -418,12 +629,14 @@ class AmmoHud {
     this.shotgun = scene.add.graphics();
     this.progress = scene.add.graphics();
     this.status = scene.add.text(0, 58, "R RELOAD", hudStyle(14, "#f7f1dc", "900")).setOrigin(0.5);
+    this.powerups = scene.add.text(0, 104, "", hudStyle(14, "#ffdf91", "900")).setOrigin(0.5);
     this.status.setResolution(2);
+    this.powerups.setResolution(2);
     this.reloadShell = this.createLooseShell();
 
     this.drawShotgun();
     this.weapon.add(this.shotgun);
-    this.root.add([this.weapon, this.progress, this.status, this.reloadShell]);
+    this.root.add([this.weapon, this.progress, this.status, this.powerups, this.reloadShell]);
 
     for (let i = 0; i < 6; i += 1) {
       const shell = this.createShell(i);
@@ -441,6 +654,10 @@ class AmmoHud {
     const remaining = reloading ? Math.max(0, player.reloadEndsAt - now) : 0;
     const reloadProgress = reloading ? Phaser.Math.Clamp(1 - remaining / RELOAD_DURATION_MS, 0, 1) : 0;
     const visualAmmo = reloading ? Math.max(player.ammo, Math.floor(reloadProgress * player.magazineSize)) : player.ammo;
+    const activePowerups = player.activePowerups
+      .filter((powerup) => powerup.expiresAt > now)
+      .map((powerup) => `${powerupLabel(powerup.kind)} ${Math.ceil((powerup.expiresAt - now) / 1000)}s`);
+    this.powerups.setText(activePowerups.join("   "));
 
     if (player.ammo < this.lastAmmo) {
       this.kick();
@@ -685,6 +902,14 @@ function scoreStyle(fontSize: number): Phaser.Types.GameObjects.Text.TextStyle {
 
 function colorFromHue(hue: number): number {
   return Phaser.Display.Color.HSLToColor(hue / 360, 0.74, 0.55).color;
+}
+
+function powerupColor(kind: PowerupKind): number {
+  return kind === "rapid_fire" ? 0xf25f5c : 0xffc857;
+}
+
+function powerupLabel(kind: PowerupKind): string {
+  return kind === "rapid_fire" ? "Rapid fire" : "Double points";
 }
 
 function startGame() {

@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import type { WebSocket } from "ws";
 import {
   MAGAZINE_SIZE,
+  MAX_POWERUPS,
   MAX_TARGETS,
+  POWERUP_DURATION_MS,
+  POWERUP_TTL_MS,
   RELOAD_DURATION_MS,
   SHOT_COOLDOWN_MS,
   SNAPSHOT_RATE,
@@ -19,6 +22,8 @@ import {
   distanceSquared,
   type ClientMessage,
   type PlayerSnapshot,
+  type PowerupKind,
+  type PowerupSnapshot,
   type ServerMessage,
   type ShotEvent,
   type TargetKind,
@@ -40,15 +45,19 @@ type Target = TargetSnapshot & {
   ttl: number;
 };
 
+type Powerup = PowerupSnapshot;
+
 const app = Fastify({ logger: true });
 const clientDistPath = join(dirname(fileURLToPath(import.meta.url)), "../../client/dist");
 const clients = new Map<string, Client>();
 const players = new Map<string, Player>();
 const targets = new Map<string, Target>();
+const powerups = new Map<string, Powerup>();
 const shots: ShotEvent[] = [];
 
 let nextPlayerId = 1;
 let nextTargetId = 1;
+let nextPowerupId = 1;
 let nextShotId = 1;
 
 await app.register(cors, { origin: true });
@@ -95,6 +104,12 @@ app.get("/ws", { websocket: true }, (socket) => {
 
     if (message.type === "reload") {
       startReload(current, Date.now());
+      return;
+    }
+
+    if (message.type === "aim") {
+      current.aimX = clamp(message.x, 0, WORLD_WIDTH);
+      current.aimY = clamp(message.y, 0, WORLD_HEIGHT);
     }
   });
 
@@ -129,6 +144,13 @@ function stepWorld() {
 
   for (const player of players.values()) {
     finishReloadIfReady(player, now);
+    player.activePowerups = player.activePowerups.filter((powerup) => powerup.expiresAt > now);
+  }
+
+  for (const [id, powerup] of powerups) {
+    if (powerup.expiresAt <= now) {
+      powerups.delete(id);
+    }
   }
 
   for (const target of targets.values()) {
@@ -147,6 +169,10 @@ function stepWorld() {
     spawnTarget(false);
   }
 
+  while (powerups.size < MAX_POWERUPS) {
+    spawnPowerup(now);
+  }
+
   const cutoff = Date.now() - 1200;
   while (shots.length > 0 && shots[0].createdAt < cutoff) {
     shots.shift();
@@ -157,7 +183,7 @@ function handleShot(player: Player, x: number, y: number) {
   const now = Date.now();
   finishReloadIfReady(player, now);
 
-  if (now - player.lastShotAt < SHOT_COOLDOWN_MS) {
+  if (now - player.lastShotAt < getShotCooldown(player, now)) {
     return;
   }
   if (player.reloadEndsAt > now || player.ammo <= 0) {
@@ -173,6 +199,33 @@ function handleShot(player: Player, x: number, y: number) {
     x: clamp(x, 0, WORLD_WIDTH),
     y: clamp(y, 0, WORLD_HEIGHT)
   };
+  player.aimX = point.x;
+  player.aimY = point.y;
+
+  const powerup = findPowerup(point.x, point.y);
+  if (powerup) {
+    powerups.delete(powerup.id);
+    applyPowerup(player, powerup.kind, now);
+    shots.push({
+      id: `s${nextShotId++}`,
+      playerId: player.id,
+      playerName: player.name,
+      playerHue: player.hue,
+      x: point.x,
+      y: point.y,
+      hit: true,
+      points: 0,
+      targetId: powerup.id,
+      powerupKind: powerup.kind,
+      createdAt: now
+    });
+
+    if (player.ammo === 0) {
+      startReload(player, now);
+    }
+    return;
+  }
+
   const hit = findHit(point.x, point.y);
 
   let points = 0;
@@ -184,6 +237,9 @@ function handleShot(player: Player, x: number, y: number) {
     player.hits += 1;
     player.streak += 1;
     points = hit.points + Math.min(8, player.streak - 1);
+    if (hasPowerup(player, "double_points", now)) {
+      points *= 2;
+    }
     player.score += points;
   } else {
     player.streak = 0;
@@ -238,6 +294,43 @@ function findHit(x: number, y: number): Target | null {
   return best;
 }
 
+function findPowerup(x: number, y: number): Powerup | null {
+  let best: Powerup | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const powerup of powerups.values()) {
+    const leniency = powerup.radius + 10;
+    const dist = distanceSquared({ x, y }, powerup);
+    if (dist <= leniency * leniency && dist < bestDistance) {
+      best = powerup;
+      bestDistance = dist;
+    }
+  }
+
+  return best;
+}
+
+function applyPowerup(player: Player, kind: PowerupKind, now: number) {
+  const existing = player.activePowerups.find((powerup) => powerup.kind === kind);
+  if (existing) {
+    existing.expiresAt = now + POWERUP_DURATION_MS;
+    return;
+  }
+
+  player.activePowerups.push({
+    kind,
+    expiresAt: now + POWERUP_DURATION_MS
+  });
+}
+
+function hasPowerup(player: Player, kind: PowerupKind, now: number) {
+  return player.activePowerups.some((powerup) => powerup.kind === kind && powerup.expiresAt > now);
+}
+
+function getShotCooldown(player: Player, now: number) {
+  return hasPowerup(player, "rapid_fire", now) ? Math.round(SHOT_COOLDOWN_MS * 0.45) : SHOT_COOLDOWN_MS;
+}
+
 function broadcastSnapshot() {
   const leaderboard = [...players.values()]
     .sort((a, b) => b.score - a.score)
@@ -255,6 +348,7 @@ function broadcastSnapshot() {
     serverTime: Date.now(),
     players: [...players.values()].map(({ lastShotAt: _lastShotAt, ...player }) => player),
     targets: [...targets.values()].map(({ wobble: _wobble, age: _age, ttl: _ttl, ...target }) => target),
+    powerups: [...powerups.values()],
     shots,
     leaderboard
   };
@@ -315,6 +409,21 @@ function randomKind(): TargetKind {
   return "cluck";
 }
 
+function spawnPowerup(now: number) {
+  const margin = 72;
+  const kind: PowerupKind = Math.random() < 0.58 ? "rapid_fire" : "double_points";
+  const id = `u${nextPowerupId++}`;
+
+  powerups.set(id, {
+    id,
+    kind,
+    x: margin + Math.random() * (WORLD_WIDTH - margin * 2),
+    y: 92 + Math.random() * (WORLD_HEIGHT - 240),
+    radius: 28,
+    expiresAt: now + POWERUP_TTL_MS
+  });
+}
+
 function createPlayer(id: string, name: string): Player {
   return {
     id,
@@ -327,6 +436,9 @@ function createPlayer(id: string, name: string): Player {
     ammo: MAGAZINE_SIZE,
     magazineSize: MAGAZINE_SIZE,
     reloadEndsAt: 0,
+    aimX: WORLD_WIDTH / 2,
+    aimY: WORLD_HEIGHT / 2,
+    activePowerups: [],
     lastShotAt: 0
   };
 }
@@ -346,6 +458,9 @@ function parseMessage(raw: string): ClientMessage | null {
       return parsed;
     }
     if (parsed.type === "reload") {
+      return parsed;
+    }
+    if (parsed.type === "aim" && typeof parsed.x === "number" && typeof parsed.y === "number") {
       return parsed;
     }
   } catch {

@@ -6,6 +6,9 @@ export const MAX_TARGETS = 18;
 export const SHOT_COOLDOWN_MS = 160;
 export const MAGAZINE_SIZE = 6;
 export const RELOAD_DURATION_MS = 2100;
+export const MAX_POWERUPS = 3;
+export const POWERUP_DURATION_MS = 7000;
+export const POWERUP_TTL_MS = 11000;
 
 export type Vec2 = {
   x: number;
@@ -13,6 +16,7 @@ export type Vec2 = {
 };
 
 export type TargetKind = "cluck" | "runner" | "bonus" | "giant";
+export type PowerupKind = "rapid_fire" | "double_points";
 
 export type TargetSnapshot = {
   id: string;
@@ -38,6 +42,23 @@ export type PlayerSnapshot = {
   ammo: number;
   magazineSize: number;
   reloadEndsAt: number;
+  aimX: number;
+  aimY: number;
+  activePowerups: ActivePowerupSnapshot[];
+};
+
+export type ActivePowerupSnapshot = {
+  kind: PowerupKind;
+  expiresAt: number;
+};
+
+export type PowerupSnapshot = {
+  id: string;
+  kind: PowerupKind;
+  x: number;
+  y: number;
+  radius: number;
+  expiresAt: number;
 };
 
 export type ShotEvent = {
@@ -50,6 +71,7 @@ export type ShotEvent = {
   hit: boolean;
   points: number;
   targetId?: string;
+  powerupKind?: PowerupKind;
   createdAt: number;
 };
 
@@ -75,6 +97,7 @@ export type ServerMessage =
       serverTime: number;
       players: PlayerSnapshot[];
       targets: TargetSnapshot[];
+      powerups: PowerupSnapshot[];
       shots: ShotEvent[];
       leaderboard: LeaderboardEntry[];
     };
@@ -92,6 +115,11 @@ export type ClientMessage =
     }
   | {
       type: "reload";
+    }
+  | {
+      type: "aim";
+      x: number;
+      y: number;
     };
 
 export function clamp(value: number, min: number, max: number): number {
