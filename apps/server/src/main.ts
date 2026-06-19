@@ -243,7 +243,9 @@ function handleShot(player: Player, x: number, y: number) {
   if (powerup) {
     powerups.delete(powerup.id);
     const nukePoints = powerup.kind === "nuke" ? detonateNuke(player, now) : 0;
-    if (powerup.kind !== "nuke") {
+    if (powerup.kind === "ammo_box") {
+      refillAmmo(player);
+    } else if (powerup.kind !== "nuke") {
       applyPowerup(player, powerup.kind, now);
     }
     shots.push({
@@ -318,6 +320,11 @@ function finishReloadIfReady(player: Player, now: number) {
   }
 }
 
+function refillAmmo(player: Player) {
+  player.ammo = player.magazineSize;
+  player.reloadEndsAt = 0;
+}
+
 function findHit(x: number, y: number): Target | null {
   let best: Target | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -351,6 +358,11 @@ function findPowerup(x: number, y: number): Powerup | null {
 }
 
 function applyPowerup(player: Player, kind: PowerupKind, now: number) {
+  if (kind === "ammo_box") {
+    refillAmmo(player);
+    return;
+  }
+
   const existing = player.activePowerups.find((powerup) => powerup.kind === kind);
   if (existing) {
     existing.expiresAt = now + POWERUP_DURATION_MS;
@@ -592,8 +604,11 @@ function randomPowerupKind(): PowerupKind {
   if (roll > 0.82) {
     return "nuke";
   }
-  if (roll > 0.48) {
+  if (roll > 0.6) {
     return "machine_gun";
+  }
+  if (roll > 0.32) {
+    return "ammo_box";
   }
   return "double_points";
 }

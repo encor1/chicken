@@ -19,7 +19,7 @@ export type Vec2 = {
 };
 
 export type TargetKind = "cluck" | "runner" | "bonus" | "giant" | "royal";
-export type PowerupKind = "machine_gun" | "double_points" | "nuke";
+export type PowerupKind = "machine_gun" | "double_points" | "nuke" | "ammo_box";
 
 export type TargetSnapshot = {
   id: string;

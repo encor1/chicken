@@ -1,4 +1,8 @@
 import Phaser from "phaser";
+import ammoBoxPowerupUrl from "./assets/weapons/ammobox.png";
+import grenadePowerupUrl from "./assets/weapons/grenade.png";
+import machineGunWeaponUrl from "./assets/weapons/machine-gun.png";
+import shotgunWeaponUrl from "./assets/weapons/shotgun.png";
 import {
   POWERUP_DURATION_MS,
   POWERUP_TTL_MS,
@@ -17,6 +21,11 @@ import {
   type TargetSnapshot
 } from "@game-io/shared";
 import "./styles.css";
+
+const SHOTGUN_WEAPON_KEY = "weapon-shotgun";
+const MACHINE_GUN_WEAPON_KEY = "weapon-machine-gun";
+const AMMO_BOX_POWERUP_KEY = "powerup-ammo-box";
+const GRENADE_POWERUP_KEY = "powerup-grenade";
 
 const params = new URLSearchParams(window.location.search);
 let playerName = "";
@@ -70,6 +79,13 @@ class GalleryScene extends Phaser.Scene {
   private lastRoundNumber = 0;
   private lastAimSentAt = 0;
   private lastMachineGunSendAt = 0;
+
+  preload() {
+    this.load.image(SHOTGUN_WEAPON_KEY, shotgunWeaponUrl);
+    this.load.image(MACHINE_GUN_WEAPON_KEY, machineGunWeaponUrl);
+    this.load.image(AMMO_BOX_POWERUP_KEY, ammoBoxPowerupUrl);
+    this.load.image(GRENADE_POWERUP_KEY, grenadePowerupUrl);
+  }
 
   create() {
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
@@ -768,7 +784,7 @@ class PowerupView {
   private readonly halo: Phaser.GameObjects.Arc;
   private readonly core: Phaser.GameObjects.Arc;
   private readonly star: Phaser.GameObjects.Star;
-  private readonly icon: Phaser.GameObjects.Text;
+  private readonly icon: Phaser.GameObjects.Text | Phaser.GameObjects.Image;
   private readonly label: Phaser.GameObjects.Text;
   private readonly timer: Phaser.GameObjects.Graphics;
   private target: PowerupSnapshot;
@@ -781,9 +797,8 @@ class PowerupView {
     this.halo = scene.add.circle(0, 0, snapshot.radius + 8, color, 0.18).setStrokeStyle(4, color, 0.85);
     this.star = scene.add.star(0, 0, 8, snapshot.radius * 0.78, snapshot.radius * 1.42, color, 0.34);
     this.core = scene.add.circle(0, 0, snapshot.radius, 0x18232c, 0.86).setStrokeStyle(4, color, 1);
-    this.icon = scene.add.text(0, -1, powerupIcon(snapshot.kind), hudStyle(18, "#fffaf0", "900")).setOrigin(0.5);
+    this.icon = this.createIcon(scene, snapshot.kind);
     this.label = scene.add.text(0, snapshot.radius + 24, powerupLabel(snapshot.kind).toUpperCase(), hudStyle(11, "#fffaf0", "900")).setOrigin(0.5);
-    this.icon.setResolution(2);
     this.label.setResolution(2);
     this.timer = scene.add.graphics();
     this.group = scene.add.container(snapshot.x, snapshot.y, [this.halo, this.star, this.core, this.icon, this.label, this.timer]).setDepth(55);
@@ -817,6 +832,20 @@ class PowerupView {
 
   destroy() {
     this.group.destroy(true);
+  }
+
+  private createIcon(scene: Phaser.Scene, kind: PowerupKind) {
+    const texture = powerupTextureKey(kind);
+    if (texture) {
+      const icon = scene.add.image(0, 0, texture).setOrigin(0.5);
+      const size = powerupImageSize(kind);
+      icon.setDisplaySize(size.width, size.height);
+      return icon;
+    }
+
+    const icon = scene.add.text(0, -1, powerupIcon(kind), hudStyle(18, "#fffaf0", "900")).setOrigin(0.5);
+    icon.setResolution(2);
+    return icon;
   }
 }
 
@@ -1013,7 +1042,9 @@ class AmmoHud {
   private readonly scene: Phaser.Scene;
   private readonly root: Phaser.GameObjects.Container;
   private readonly weapon: Phaser.GameObjects.Container;
-  private readonly shotgun: Phaser.GameObjects.Graphics;
+  private readonly weaponShadow: Phaser.GameObjects.Ellipse;
+  private readonly shotgun: Phaser.GameObjects.Image;
+  private readonly machineGun: Phaser.GameObjects.Image;
   private readonly shells: Phaser.GameObjects.Container[] = [];
   private readonly reloadShell: Phaser.GameObjects.Container;
   private readonly progress: Phaser.GameObjects.Graphics;
@@ -1023,12 +1054,15 @@ class AmmoHud {
   private lastAmmo = -1;
   private wasReloading = false;
   private lastReloadSlot = -1;
+  private activeWeapon: "shotgun" | "machine_gun" = "shotgun";
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     this.scene = scene;
     this.root = scene.add.container(x, y).setDepth(85);
     this.weapon = scene.add.container(0, 0);
-    this.shotgun = scene.add.graphics();
+    this.weaponShadow = scene.add.ellipse(0, 42, 392, 32, 0x111820, 0.34);
+    this.shotgun = scene.add.image(0, 2, SHOTGUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(414, 119);
+    this.machineGun = scene.add.image(0, 4, MACHINE_GUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(356, 129).setAlpha(0);
     this.progress = scene.add.graphics();
     this.status = scene.add.text(0, 58, "R RELOAD", hudStyle(14, "#f7f1dc", "900")).setOrigin(0.5);
     this.buffPanel = scene.add.graphics();
@@ -1037,8 +1071,7 @@ class AmmoHud {
     this.buffText.setResolution(2);
     this.reloadShell = this.createLooseShell();
 
-    this.drawShotgun();
-    this.weapon.add(this.shotgun);
+    this.weapon.add([this.weaponShadow, this.shotgun, this.machineGun]);
     this.root.add([this.buffPanel, this.weapon, this.progress, this.status, this.buffText, this.reloadShell]);
 
     for (let i = 0; i < 6; i += 1) {
@@ -1060,6 +1093,8 @@ class AmmoHud {
     const activePowerups = player.activePowerups
       .filter((powerup) => powerup.expiresAt > now)
       .map((powerup) => `${powerupLabel(powerup.kind)} ${Math.ceil((powerup.expiresAt - now) / 1000)}s`);
+    const machineGunActive = hasActivePowerup(player, "machine_gun", now);
+    this.renderWeapon(machineGunActive ? "machine_gun" : "shotgun");
     this.renderBuffMonitor(activePowerups);
 
     if (player.ammo < this.lastAmmo) {
@@ -1082,6 +1117,11 @@ class AmmoHud {
     }
 
     this.progress.clear();
+    if (machineGunActive) {
+      this.status.setText("MACHINE GUN");
+      return;
+    }
+
     if (reloading) {
       const width = reloadProgress * 220;
       this.progress.fillStyle(0x18232c, 0.74);
@@ -1095,6 +1135,27 @@ class AmmoHud {
 
     this.lastReloadSlot = -1;
     this.status.setText("R RELOAD");
+  }
+
+  private renderWeapon(activeWeapon: "shotgun" | "machine_gun") {
+    if (activeWeapon === this.activeWeapon) {
+      return;
+    }
+
+    this.activeWeapon = activeWeapon;
+    this.scene.tweens.killTweensOf([this.shotgun, this.machineGun]);
+    this.scene.tweens.add({
+      targets: this.shotgun,
+      alpha: activeWeapon === "shotgun" ? 1 : 0,
+      duration: 120,
+      ease: "quad.out"
+    });
+    this.scene.tweens.add({
+      targets: this.machineGun,
+      alpha: activeWeapon === "machine_gun" ? 1 : 0,
+      duration: 120,
+      ease: "quad.out"
+    });
   }
 
   private renderBuffMonitor(activePowerups: string[]) {
@@ -1121,12 +1182,13 @@ class AmmoHud {
     this.scene.tweens.killTweensOf(this.weapon);
     this.weapon.setPosition(0, 0);
     this.weapon.setAngle(0);
+    const machineGunKick = this.activeWeapon === "machine_gun";
     this.scene.tweens.add({
       targets: this.weapon,
-      x: { from: -18, to: 0 },
-      y: { from: 8, to: 0 },
-      angle: { from: -2, to: 0 },
-      duration: 170,
+      x: { from: machineGunKick ? -10 : -18, to: 0 },
+      y: { from: machineGunKick ? 4 : 8, to: 0 },
+      angle: { from: machineGunKick ? -1 : -2, to: 0 },
+      duration: machineGunKick ? 92 : 170,
       ease: "back.out"
     });
   }
@@ -1179,31 +1241,8 @@ class AmmoHud {
     });
   }
 
-  private drawShotgun() {
-    this.shotgun.clear();
-    this.shotgun.fillStyle(0x111820, 0.32);
-    this.shotgun.fillEllipse(0, 38, 390, 34);
-    this.shotgun.fillStyle(0x6f3f2a, 1);
-    this.shotgun.fillRoundedRect(-178, 4, 76, 32, 11);
-    this.shotgun.fillRoundedRect(62, 0, 120, 34, 12);
-    this.shotgun.fillStyle(0x9b5b35, 1);
-    this.shotgun.fillRoundedRect(-96, -2, 128, 38, 12);
-    this.shotgun.fillStyle(0xb97846, 1);
-    this.shotgun.fillRoundedRect(-70, 10, 90, 16, 8);
-    this.shotgun.fillStyle(0x18232c, 1);
-    this.shotgun.fillRoundedRect(-190, -19, 380, 24, 12);
-    this.shotgun.fillStyle(0xd7dde0, 1);
-    this.shotgun.fillRoundedRect(-176, -28, 166, 10, 5);
-    this.shotgun.fillStyle(0x283947, 1);
-    this.shotgun.fillRoundedRect(120, -16, 66, 16, 8);
-    this.shotgun.lineStyle(4, 0xf7f1dc, 0.36);
-    this.shotgun.lineBetween(-178, -10, 178, -10);
-    this.shotgun.lineStyle(4, 0x111820, 0.8);
-    this.shotgun.strokeRoundedRect(-96, -2, 128, 38, 12);
-  }
-
   private createShell(index: number) {
-    const shell = this.scene.add.container(-108 + index * 43, -58);
+    const shell = this.scene.add.container(-108 + index * 43, -74);
     shell.scale = 1.08;
     shell.add(this.createShellGraphic());
     return shell;
@@ -1343,6 +1382,9 @@ function powerupColor(kind: PowerupKind): number {
   if (kind === "machine_gun") {
     return 0xf25f5c;
   }
+  if (kind === "ammo_box") {
+    return 0x78d66f;
+  }
   if (kind === "nuke") {
     return 0xb7f7ef;
   }
@@ -1356,6 +1398,9 @@ function powerupLabel(kind: PowerupKind): string {
   if (kind === "nuke") {
     return "Nuke";
   }
+  if (kind === "ammo_box") {
+    return "Ammo box";
+  }
   return "Double points";
 }
 
@@ -1366,7 +1411,27 @@ function powerupIcon(kind: PowerupKind): string {
   if (kind === "nuke") {
     return "!";
   }
+  if (kind === "ammo_box") {
+    return "AMMO";
+  }
   return "x2";
+}
+
+function powerupTextureKey(kind: PowerupKind): string | null {
+  if (kind === "nuke") {
+    return GRENADE_POWERUP_KEY;
+  }
+  if (kind === "ammo_box") {
+    return AMMO_BOX_POWERUP_KEY;
+  }
+  return null;
+}
+
+function powerupImageSize(kind: PowerupKind): { width: number; height: number } {
+  if (kind === "ammo_box") {
+    return { width: 60, height: 41 };
+  }
+  return { width: 38, height: 42 };
 }
 
 function hasActivePowerup(player: PlayerSnapshot, kind: PowerupKind, now: number): boolean {
