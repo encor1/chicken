@@ -1,19 +1,20 @@
 import Phaser from "phaser";
-import ammoBoxPowerupUrl from "./assets/weapons/ammobox.png";
 import grenadePowerupUrl from "./assets/weapons/grenade.png";
 import machineGunWeaponUrl from "./assets/weapons/machine-gun.png";
 import shotgunWeaponUrl from "./assets/weapons/shotgun.png";
 import {
   POWERUP_DURATION_MS,
   POWERUP_TTL_MS,
-  RELOAD_DURATION_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
   type ClientMessage,
+  type CoopUpgradeSnapshot,
   type LeaderboardEntry,
   type PlayerSnapshot,
   type PowerupKind,
   type PowerupSnapshot,
+  type RoomFilter,
+  type RoomSummary,
   type RoundSnapshot,
   type ServerMessage,
   type ShotEvent,
@@ -24,14 +25,21 @@ import "./styles.css";
 
 const SHOTGUN_WEAPON_KEY = "weapon-shotgun";
 const MACHINE_GUN_WEAPON_KEY = "weapon-machine-gun";
-const AMMO_BOX_POWERUP_KEY = "powerup-ammo-box";
 const GRENADE_POWERUP_KEY = "powerup-grenade";
 
 const params = new URLSearchParams(window.location.search);
 let playerName = "";
+let selectedRoomId = "";
+let game: Phaser.Game | null = null;
+let roomFilter: RoomFilter = "all";
+let rooms: RoomSummary[] = [];
 
 const startScreen = document.querySelector<HTMLFormElement>("#start-screen");
 const nameInput = document.querySelector<HTMLInputElement>("#player-name");
+const roomNameInput = document.querySelector<HTMLInputElement>("#room-name");
+const roomModeInput = document.querySelector<HTMLSelectElement>("#room-mode");
+const roomsList = document.querySelector<HTMLDivElement>("#rooms-list");
+const roomTabs = document.querySelectorAll<HTMLButtonElement>(".room-tab");
 
 if (nameInput) {
   nameInput.value = params.get("name") ?? localStorage.getItem("gallery-name") ?? "";
@@ -40,12 +48,125 @@ if (nameInput) {
 
 startScreen?.addEventListener("submit", (event) => {
   event.preventDefault();
-  const submittedName = nameInput?.value.trim() ?? "";
-  playerName = submittedName.length > 0 ? submittedName : `Player ${Math.floor(Math.random() * 900 + 100)}`;
-  localStorage.setItem("gallery-name", playerName);
-  startScreen.classList.add("is-hidden");
-  startGame();
+  void createRoomAndJoin();
 });
+
+roomsList?.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-room-id]");
+  if (!button) {
+    return;
+  }
+  joinRoom(button.dataset.roomId ?? "");
+});
+
+for (const tab of roomTabs) {
+  tab.addEventListener("click", () => {
+    roomFilter = (tab.dataset.roomFilter as RoomFilter | undefined) ?? "all";
+    for (const item of roomTabs) {
+      item.classList.toggle("is-active", item === tab);
+    }
+    renderRooms();
+  });
+}
+
+void refreshRooms();
+setInterval(() => {
+  if (!startScreen?.classList.contains("is-hidden")) {
+    void refreshRooms();
+  }
+}, 3000);
+
+function apiBase() {
+  const isViteDevServer = window.location.port === "5173";
+  const host = params.get("server") ?? (isViteDevServer ? `${window.location.hostname}:3000` : window.location.host);
+  return `${window.location.protocol}//${host}`;
+}
+
+function readPlayerName() {
+  const submittedName = nameInput?.value.trim() ?? "";
+  return submittedName.length > 0 ? submittedName : `Player ${Math.floor(Math.random() * 900 + 100)}`;
+}
+
+async function refreshRooms() {
+  if (!roomsList) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`${apiBase()}/rooms`);
+    rooms = (await response.json()) as RoomSummary[];
+    renderRooms();
+  } catch {
+    roomsList.innerHTML = `<div class="empty-rooms">Room list unavailable</div>`;
+  }
+}
+
+function renderRooms() {
+  if (!roomsList) {
+    return;
+  }
+
+  const visibleRooms = rooms.filter((room) => roomFilter === "all" || room.mode === roomFilter);
+  if (visibleRooms.length === 0) {
+    roomsList.innerHTML = `<div class="empty-rooms">No public rooms yet</div>`;
+    return;
+  }
+
+  roomsList.innerHTML = visibleRooms
+    .map(
+      (room) => `
+        <button class="room-row" type="button" data-room-id="${escapeHtml(room.id)}">
+          <span class="room-name">${escapeHtml(room.name)}</span>
+          <span class="room-meta">${room.mode.toUpperCase()} · ${room.playerCount} online · ${room.mode === "pve" ? `Wave ${room.wave}` : `Round ${room.roundNumber}`} · ${room.state.replace("_", " ")}</span>
+        </button>
+      `
+    )
+    .join("");
+}
+
+async function createRoomAndJoin() {
+  const mode = roomModeInput?.value === "pvp" ? "pvp" : "pve";
+  const name = roomNameInput?.value.trim() || (mode === "pve" ? "Coop Run" : "Classic PvP");
+  const response = await fetch(`${apiBase()}/rooms`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ name, mode })
+  });
+  const room = (await response.json()) as RoomSummary;
+  joinRoom(room.id);
+}
+
+function joinRoom(roomId: string) {
+  if (!roomId || game) {
+    return;
+  }
+
+  selectedRoomId = roomId;
+  playerName = readPlayerName();
+  localStorage.setItem("gallery-name", playerName);
+  startScreen?.classList.add("is-hidden");
+  startGame();
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => {
+    if (char === "&") {
+      return "&amp;";
+    }
+    if (char === "<") {
+      return "&lt;";
+    }
+    if (char === ">") {
+      return "&gt;";
+    }
+    if (char === '"') {
+      return "&quot;";
+    }
+    return "&#39;";
+  });
+}
 
 class GalleryScene extends Phaser.Scene {
   private socket: WebSocket | null = null;
@@ -67,13 +188,16 @@ class GalleryScene extends Phaser.Scene {
   private roundTitle!: Phaser.GameObjects.Text;
   private roundSubtitle!: Phaser.GameObjects.Text;
   private roundMeta!: Phaser.GameObjects.Text;
-  private ammoHud!: AmmoHud;
+  private readonly upgradeCardTitles: Phaser.GameObjects.Text[] = [];
+  private readonly upgradeCardDescriptions: Phaser.GameObjects.Text[] = [];
+  private readonly upgradeCardVotes: Phaser.GameObjects.Text[] = [];
+  private weaponHud!: WeaponHud;
   private crosshair!: Phaser.GameObjects.Graphics;
   private background!: Phaser.GameObjects.Graphics;
   private sfx!: SoundFx;
-  private reloadKey!: Phaser.Input.Keyboard.Key;
   private tauntKey!: Phaser.Input.Keyboard.Key;
   private round: RoundSnapshot | null = null;
+  private room: RoomSummary | null = null;
   private serverTimeOffset = 0;
   private lastRoundState = "";
   private lastRoundNumber = 0;
@@ -83,7 +207,6 @@ class GalleryScene extends Phaser.Scene {
   preload() {
     this.load.image(SHOTGUN_WEAPON_KEY, shotgunWeaponUrl);
     this.load.image(MACHINE_GUN_WEAPON_KEY, machineGunWeaponUrl);
-    this.load.image(AMMO_BOX_POWERUP_KEY, ammoBoxPowerupUrl);
     this.load.image(GRENADE_POWERUP_KEY, grenadePowerupUrl);
   }
 
@@ -104,12 +227,29 @@ class GalleryScene extends Phaser.Scene {
     this.roundTitle = this.add.text(WORLD_WIDTH / 2, 18, "", hudStyle(18, "#fffaf0", "900")).setOrigin(0.5, 0).setDepth(87);
     this.roundSubtitle = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10, "", hudStyle(28, "#ffdf91", "900")).setOrigin(0.5).setDepth(101);
     this.roundMeta = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42, "", hudStyle(18, "#f5f7fa", "800")).setOrigin(0.5).setDepth(101);
-    this.ammoHud = new AmmoHud(this, WORLD_WIDTH / 2, WORLD_HEIGHT - 84);
+    for (let i = 0; i < 3; i += 1) {
+      const title = this.add.text(0, 0, "", hudStyle(17, "#fffaf0", "900")).setOrigin(0.5, 0).setDepth(102).setVisible(false);
+      const description = this.add
+        .text(0, 0, "", {
+          ...hudStyle(13, "#dfeaf0", "800"),
+          align: "center",
+          wordWrap: { width: 196 }
+        })
+        .setOrigin(0.5, 0)
+        .setDepth(102)
+        .setVisible(false);
+      const votes = this.add.text(0, 0, "", hudStyle(13, "#ffdf91", "900")).setOrigin(0.5, 1).setDepth(102).setVisible(false);
+      title.setResolution(2);
+      description.setResolution(2);
+      votes.setResolution(2);
+      this.upgradeCardTitles.push(title);
+      this.upgradeCardDescriptions.push(description);
+      this.upgradeCardVotes.push(votes);
+    }
+    this.weaponHud = new WeaponHud(this, WORLD_WIDTH / 2, WORLD_HEIGHT - 84);
 
     this.crosshair = this.add.graphics().setDepth(90);
-    this.reloadKey = this.input.keyboard!.addKey("R");
     this.tauntKey = this.input.keyboard!.addKey("M");
-    this.reloadKey.on("down", () => this.reload());
     this.tauntKey.on("down", () => this.taunt());
     this.input.setDefaultCursor("none");
     this.input.on("pointermove", this.drawCrosshair, this);
@@ -136,8 +276,9 @@ class GalleryScene extends Phaser.Scene {
     const local = this.players.find((player) => player.id === this.playerId);
     if (local) {
       const accuracy = local.shots > 0 ? Math.round((local.hits / local.shots) * 100) : 0;
-      this.statusText.setText(`${local.name}  score ${local.score}  streak ${local.streak}  ${accuracy}%`);
-      this.renderAmmo(local);
+      const scoreLabel = this.round?.mode === "pve" ? "wave score" : "score";
+      this.statusText.setText(`${local.name}  ${scoreLabel} ${local.score}  streak ${local.streak}  ${accuracy}%`);
+      this.renderWeaponHud(local);
       this.fireMachineGunIfHeld(local);
     }
   }
@@ -150,7 +291,7 @@ class GalleryScene extends Phaser.Scene {
 
     this.socket.addEventListener("open", () => {
       this.statusText.setText("Joining...");
-      this.send({ type: "join", name: playerName });
+      this.send({ type: "join", name: playerName, roomId: selectedRoomId });
     });
 
     this.socket.addEventListener("message", (event) => {
@@ -170,6 +311,7 @@ class GalleryScene extends Phaser.Scene {
     }
 
     this.players = message.players;
+    this.room = message.room;
     this.leaderboardEntries = message.leaderboard;
     this.serverTimeOffset = message.serverTime - Date.now();
     this.applyRoundSnapshot(message.round);
@@ -213,30 +355,113 @@ class GalleryScene extends Phaser.Scene {
       const remaining = Math.max(0, this.round.endsAt - now);
       this.roundPanel.setDepth(86);
       this.roundTitle.setVisible(true);
-      this.roundTitle.setText(`ROUND ${this.round.number}   ${formatClock(remaining)}`);
       this.roundSubtitle.setVisible(false);
       this.roundMeta.setVisible(false);
+      this.hideUpgradeCards();
       this.roundPanel.fillStyle(0x18232c, 0.74);
-      this.roundPanel.lineStyle(3, remaining < 10_000 ? 0xf25f5c : 0xffdf91, 0.9);
-      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 122, 12, 244, 40, 8);
-      this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 122, 12, 244, 40, 8);
+
+      if (this.round.mode === "pvp") {
+        this.roundTitle.setText(`PVP ROUND ${this.round.number}   ${formatClock(remaining)}`);
+        this.roundPanel.lineStyle(3, remaining < 10_000 ? 0xf25f5c : 0xffdf91, 0.9);
+        this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 154, 12, 308, 40, 8);
+        this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 154, 12, 308, 40, 8);
+        return;
+      }
+
+      const morale = Math.max(0, this.round.morale);
+      const moraleMax = Math.max(1, this.round.maxMorale);
+      const moraleRatio = Phaser.Math.Clamp(morale / moraleMax, 0, 1);
+      this.roundTitle.setText(`WAVE ${this.round.wave}   ${formatClock(remaining)}   TEAM ${this.round.teamScore}   MORALE ${morale}/${moraleMax}`);
+      this.roundPanel.lineStyle(3, moraleRatio < 0.25 || remaining < 10_000 ? 0xf25f5c : 0xffdf91, 0.9);
+      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 292, 12, 584, 58, 8);
+      this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 292, 12, 584, 58, 8);
+      this.roundPanel.fillStyle(0x111820, 0.55);
+      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 248, 51, 496, 9, 5);
+      this.roundPanel.fillStyle(moraleRatio < 0.25 ? 0xf25f5c : moraleRatio < 0.55 ? 0xffdf91 : 0x78d66f, 0.96);
+      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 248, 51, 496 * moraleRatio, 9, 5);
       return;
     }
 
     const nextRoundIn = Math.max(0, (this.round.nextRoundStartsAt ?? now) - now);
-    const winner = this.round.winner;
     this.roundPanel.setDepth(98);
     this.roundTitle.setVisible(false);
     this.roundSubtitle.setVisible(true);
     this.roundMeta.setVisible(true);
-    this.roundSubtitle.setText(winner ? `${winner.name} wins round ${this.round.number}` : `Round ${this.round.number} complete`);
-    this.roundMeta.setText(winner ? `${winner.score} points  |  next round in ${Math.ceil(nextRoundIn / 1000)}s` : `Next round in ${Math.ceil(nextRoundIn / 1000)}s`);
+
+    if (this.round.mode === "pvp") {
+      this.hideUpgradeCards();
+      const winner = this.round.winner;
+      this.roundSubtitle.setText(winner ? `${winner.name} wins round ${this.round.number}` : `Round ${this.round.number} complete`);
+      this.roundMeta.setText(winner ? `${winner.score} points  |  next round in ${Math.ceil(nextRoundIn / 1000)}s` : `Next round in ${Math.ceil(nextRoundIn / 1000)}s`);
+      this.roundPanel.fillStyle(0x111820, 0.58);
+      this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      this.roundPanel.fillStyle(0x18232c, 0.92);
+      this.roundPanel.lineStyle(5, 0xffdf91, 0.95);
+      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+      this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+      return;
+    }
+
+    if (this.round.state === "run_over") {
+      this.hideUpgradeCards();
+      this.roundSubtitle.setText("Run over");
+      this.roundMeta.setText(`Reached wave ${this.round.wave}  |  team score ${this.round.teamScore}  |  new run in ${Math.ceil(nextRoundIn / 1000)}s`);
+      this.roundPanel.fillStyle(0x111820, 0.68);
+      this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      this.roundPanel.fillStyle(0x241a20, 0.94);
+      this.roundPanel.lineStyle(5, 0xf25f5c, 0.95);
+      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+      this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+      return;
+    }
+
+    this.roundSubtitle.setText(`Wave ${this.round.wave} complete`);
+    this.roundMeta.setText(`Team score ${this.round.teamScore}  |  morale ${this.round.morale}/${this.round.maxMorale}  |  choose an upgrade  |  next wave in ${Math.ceil(nextRoundIn / 1000)}s`);
     this.roundPanel.fillStyle(0x111820, 0.58);
     this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     this.roundPanel.fillStyle(0x18232c, 0.92);
     this.roundPanel.lineStyle(5, 0xffdf91, 0.95);
-    this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
-    this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+    this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 420, WORLD_HEIGHT / 2 - 178, 840, 300, 8);
+    this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 420, WORLD_HEIGHT / 2 - 178, 840, 300, 8);
+    this.renderUpgradeCards(this.round.upgradeOptions ?? []);
+  }
+
+  private renderUpgradeCards(options: CoopUpgradeSnapshot[]) {
+    const selected = this.round?.playerUpgradeVotes?.[this.playerId];
+
+    for (let i = 0; i < this.upgradeCardTitles.length; i += 1) {
+      const option = options[i];
+      const title = this.upgradeCardTitles[i];
+      const description = this.upgradeCardDescriptions[i];
+      const votes = this.upgradeCardVotes[i];
+
+      if (!option) {
+        title.setVisible(false);
+        description.setVisible(false);
+        votes.setVisible(false);
+        continue;
+      }
+
+      const rect = upgradeCardRect(i, options.length);
+      const isSelected = selected === option.kind;
+      this.roundPanel.fillStyle(isSelected ? 0x2f4b3f : 0x263646, 0.98);
+      this.roundPanel.lineStyle(isSelected ? 5 : 3, isSelected ? 0x78d66f : 0xf7f1dc, isSelected ? 1 : 0.42);
+      this.roundPanel.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, 8);
+      this.roundPanel.strokeRoundedRect(rect.x, rect.y, rect.width, rect.height, 8);
+
+      title.setVisible(true).setPosition(rect.x + rect.width / 2, rect.y + 18).setText(`${option.title}${option.stacks > 0 ? ` ${roman(option.stacks + 1)}` : ""}`);
+      description.setVisible(true).setPosition(rect.x + rect.width / 2, rect.y + 58).setText(option.description);
+      votes
+        .setVisible(true)
+        .setPosition(rect.x + rect.width / 2, rect.y + rect.height - 18)
+        .setText(`${this.round?.upgradeVotes?.[option.kind] ?? 0} vote${(this.round?.upgradeVotes?.[option.kind] ?? 0) === 1 ? "" : "s"}`);
+    }
+  }
+
+  private hideUpgradeCards() {
+    for (const text of [...this.upgradeCardTitles, ...this.upgradeCardDescriptions, ...this.upgradeCardVotes]) {
+      text.setVisible(false);
+    }
   }
 
   private serverNow() {
@@ -523,16 +748,16 @@ class GalleryScene extends Phaser.Scene {
 
   private shoot(pointer: Phaser.Input.Pointer) {
     if (this.round?.state === "ended") {
+      this.chooseUpgradeAt(pointer);
+      return;
+    }
+    if (this.round?.state !== "active") {
       return;
     }
 
     const local = this.players.find((player) => player.id === this.playerId);
     const machineGun = local ? hasActivePowerup(local, "machine_gun", Date.now()) : false;
     this.sfx.unlock();
-    if (local && !machineGun && (local.ammo <= 0 || local.reloadEndsAt > Date.now())) {
-      this.reload();
-      return;
-    }
 
     const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     this.spawnMuzzleFlash(point.x, point.y);
@@ -543,7 +768,7 @@ class GalleryScene extends Phaser.Scene {
       seq: this.seq++
     });
     this.sfx.shot(machineGun);
-    this.ammoHud.kick();
+    this.weaponHud.kick();
   }
 
   private fireMachineGunIfHeld(local: PlayerSnapshot) {
@@ -572,14 +797,32 @@ class GalleryScene extends Phaser.Scene {
     });
   }
 
-  private reload() {
-    this.sfx.reload();
-    this.send({ type: "reload" });
-  }
-
   private taunt() {
     this.sfx.taunt();
     this.send({ type: "taunt" });
+  }
+
+  private chooseUpgradeAt(pointer: Phaser.Input.Pointer) {
+    const options = this.round?.upgradeOptions ?? [];
+    if (options.length === 0) {
+      return;
+    }
+
+    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const option = options.find((_option, index) => {
+      const rect = upgradeCardRect(index, options.length);
+      return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+    });
+
+    if (!option) {
+      return;
+    }
+
+    this.send({
+      type: "choose_upgrade",
+      kind: option.kind
+    });
+    this.sfx.powerup("double_points");
   }
 
   private sendAim(pointer: Phaser.Input.Pointer) {
@@ -609,11 +852,18 @@ class GalleryScene extends Phaser.Scene {
       return `${index + 1}. ${entry.name.padEnd(12)} ${entry.score.toString().padStart(4)}  ${accuracy}%`;
     });
 
-    this.leaderboardText.setText([`LIVE RANGE  ${this.players.length} online`, ...lines].join("\n"));
+    const roomName = this.room?.name ?? "Room";
+    const runLine =
+      this.round?.mode === "pvp"
+        ? `${roomName}  PVP  round ${this.round.number}  ${this.players.length} online`
+        : this.round
+          ? `${roomName}  ${this.round.state === "run_over" ? "RUN OVER" : "PVE RUN"}  wave ${this.round.wave}  morale ${this.round.morale}/${this.round.maxMorale}  team ${this.round.teamScore}  ${this.players.length} online`
+          : `${roomName}  ${this.players.length} online`;
+    this.leaderboardText.setText([runLine, ...lines].join("\n"));
   }
 
-  private renderAmmo(local: PlayerSnapshot) {
-    this.ammoHud.render(local, Date.now());
+  private renderWeaponHud(local: PlayerSnapshot) {
+    this.weaponHud.render(local, Date.now());
   }
 
   private syncPowerups(snapshot: PowerupSnapshot[]) {
@@ -775,7 +1025,7 @@ class GalleryScene extends Phaser.Scene {
   private resizeGame(size: Phaser.Structs.Size) {
     this.cameras.main.setZoom(Math.min(size.width / WORLD_WIDTH, size.height / WORLD_HEIGHT));
     this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-    this.ammoHud?.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT - 84);
+    this.weaponHud?.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT - 84);
   }
 }
 
@@ -955,13 +1205,6 @@ class SoundFx {
     this.tone(44, 0.64, "square", 0.09, 0.08);
   }
 
-  reload() {
-    this.unlock();
-    this.tone(180, 0.05, "triangle", 0.04);
-    this.tone(230, 0.04, "triangle", 0.035, 0.16);
-    this.noise(0.03, 0.05, 700, 0.08);
-  }
-
   taunt() {
     this.unlock();
     this.tone(360, 0.08, "square", 0.045);
@@ -1038,22 +1281,16 @@ class SoundFx {
   }
 }
 
-class AmmoHud {
+class WeaponHud {
   private readonly scene: Phaser.Scene;
   private readonly root: Phaser.GameObjects.Container;
   private readonly weapon: Phaser.GameObjects.Container;
   private readonly weaponShadow: Phaser.GameObjects.Ellipse;
   private readonly shotgun: Phaser.GameObjects.Image;
   private readonly machineGun: Phaser.GameObjects.Image;
-  private readonly shells: Phaser.GameObjects.Container[] = [];
-  private readonly reloadShell: Phaser.GameObjects.Container;
-  private readonly progress: Phaser.GameObjects.Graphics;
   private readonly status: Phaser.GameObjects.Text;
   private readonly buffPanel: Phaser.GameObjects.Graphics;
   private readonly buffText: Phaser.GameObjects.Text;
-  private lastAmmo = -1;
-  private wasReloading = false;
-  private lastReloadSlot = -1;
   private activeWeapon: "shotgun" | "machine_gun" = "shotgun";
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
@@ -1063,22 +1300,14 @@ class AmmoHud {
     this.weaponShadow = scene.add.ellipse(0, 42, 392, 32, 0x111820, 0.34);
     this.shotgun = scene.add.image(0, 2, SHOTGUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(414, 119);
     this.machineGun = scene.add.image(0, 4, MACHINE_GUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(356, 129).setAlpha(0);
-    this.progress = scene.add.graphics();
-    this.status = scene.add.text(0, 58, "R RELOAD", hudStyle(14, "#f7f1dc", "900")).setOrigin(0.5);
+    this.status = scene.add.text(0, 58, "READY", hudStyle(14, "#f7f1dc", "900")).setOrigin(0.5);
     this.buffPanel = scene.add.graphics();
     this.buffText = scene.add.text(0, -126, "", hudStyle(15, "#fffaf0", "900")).setOrigin(0.5);
     this.status.setResolution(2);
     this.buffText.setResolution(2);
-    this.reloadShell = this.createLooseShell();
 
     this.weapon.add([this.weaponShadow, this.shotgun, this.machineGun]);
-    this.root.add([this.buffPanel, this.weapon, this.progress, this.status, this.buffText, this.reloadShell]);
-
-    for (let i = 0; i < 6; i += 1) {
-      const shell = this.createShell(i);
-      this.shells.push(shell);
-      this.root.add(shell);
-    }
+    this.root.add([this.buffPanel, this.weapon, this.status, this.buffText]);
   }
 
   setPosition(x: number, y: number) {
@@ -1086,55 +1315,13 @@ class AmmoHud {
   }
 
   render(player: PlayerSnapshot, now: number) {
-    const reloading = player.reloadEndsAt > now;
-    const remaining = reloading ? Math.max(0, player.reloadEndsAt - now) : 0;
-    const reloadProgress = reloading ? Phaser.Math.Clamp(1 - remaining / RELOAD_DURATION_MS, 0, 1) : 0;
-    const visualAmmo = reloading ? Math.max(player.ammo, Math.floor(reloadProgress * player.magazineSize)) : player.ammo;
     const activePowerups = player.activePowerups
       .filter((powerup) => powerup.expiresAt > now)
       .map((powerup) => `${powerupLabel(powerup.kind)} ${Math.ceil((powerup.expiresAt - now) / 1000)}s`);
     const machineGunActive = hasActivePowerup(player, "machine_gun", now);
     this.renderWeapon(machineGunActive ? "machine_gun" : "shotgun");
     this.renderBuffMonitor(activePowerups);
-
-    if (player.ammo < this.lastAmmo) {
-      this.kick();
-    }
-
-    if (reloading && !this.wasReloading) {
-      this.playReloadStart();
-      this.lastReloadSlot = -1;
-    }
-
-    this.lastAmmo = player.ammo;
-    this.wasReloading = reloading;
-
-    for (let i = 0; i < this.shells.length; i += 1) {
-      const shell = this.shells[i];
-      const loaded = i < visualAmmo;
-      shell.setAlpha(loaded ? 1 : 0.22);
-      shell.setScale(loaded ? 1 : 0.86);
-    }
-
-    this.progress.clear();
-    if (machineGunActive) {
-      this.status.setText("MACHINE GUN");
-      return;
-    }
-
-    if (reloading) {
-      const width = reloadProgress * 220;
-      this.progress.fillStyle(0x18232c, 0.74);
-      this.progress.fillRoundedRect(-112, 78, 224, 14, 7);
-      this.progress.fillStyle(0xffdf91, 1);
-      this.progress.fillRoundedRect(-110, 80, width, 10, 5);
-      this.status.setText("RELOADING");
-      this.animateShellInsert(visualAmmo);
-      return;
-    }
-
-    this.lastReloadSlot = -1;
-    this.status.setText("R RELOAD");
+    this.status.setText(machineGunActive ? "MACHINE GUN" : "READY");
   }
 
   private renderWeapon(activeWeapon: "shotgun" | "machine_gun") {
@@ -1191,80 +1378,6 @@ class AmmoHud {
       duration: machineGunKick ? 92 : 170,
       ease: "back.out"
     });
-  }
-
-  private playReloadStart() {
-    this.scene.tweens.killTweensOf(this.weapon);
-    this.scene.tweens.add({
-      targets: this.weapon,
-      angle: { from: -11, to: -5 },
-      y: { from: 18, to: 8 },
-      duration: 260,
-      ease: "quad.out",
-      yoyo: true,
-      repeat: 1
-    });
-  }
-
-  private animateShellInsert(ammo: number) {
-    const index = Phaser.Math.Clamp(ammo, 0, this.shells.length - 1);
-    if (index === this.lastReloadSlot) {
-      return;
-    }
-    this.lastReloadSlot = index;
-    const shell = this.shells[index];
-    if (!shell || this.reloadShell.getData("animating")) {
-      return;
-    }
-
-    this.reloadShell.setData("animating", true);
-    this.reloadShell.setAlpha(1);
-    this.reloadShell.setPosition(-160, 56);
-    this.reloadShell.setAngle(-22);
-    this.scene.tweens.add({
-      targets: this.reloadShell,
-      x: shell.x,
-      y: shell.y,
-      angle: 0,
-      duration: 290,
-      ease: "quad.out",
-      onComplete: () => {
-        this.reloadShell.setAlpha(0);
-        this.reloadShell.setData("animating", false);
-        this.scene.tweens.add({
-          targets: shell,
-          scale: { from: 1.25, to: 1 },
-          duration: 180,
-          ease: "back.out"
-        });
-      }
-    });
-  }
-
-  private createShell(index: number) {
-    const shell = this.scene.add.container(-108 + index * 43, -74);
-    shell.scale = 1.08;
-    shell.add(this.createShellGraphic());
-    return shell;
-  }
-
-  private createLooseShell() {
-    const shell = this.scene.add.container(-160, 56);
-    shell.setAlpha(0);
-    shell.scale = 1.18;
-    shell.add(this.createShellGraphic());
-    return shell;
-  }
-
-  private createShellGraphic() {
-    const body = this.scene.add.graphics();
-    body.fillStyle(0xc04f3f, 1);
-    body.fillRoundedRect(-9, -16, 18, 32, 6);
-    body.fillStyle(0xffdf91, 1);
-    body.fillRoundedRect(-9, -18, 18, 9, 4);
-    body.lineStyle(2, 0x18232c, 1);
-    body.strokeRoundedRect(-9, -18, 18, 34, 6);
-    return body;
   }
 }
 
@@ -1382,9 +1495,6 @@ function powerupColor(kind: PowerupKind): number {
   if (kind === "machine_gun") {
     return 0xf25f5c;
   }
-  if (kind === "ammo_box") {
-    return 0x78d66f;
-  }
   if (kind === "nuke") {
     return 0xb7f7ef;
   }
@@ -1398,9 +1508,6 @@ function powerupLabel(kind: PowerupKind): string {
   if (kind === "nuke") {
     return "Nuke";
   }
-  if (kind === "ammo_box") {
-    return "Ammo box";
-  }
   return "Double points";
 }
 
@@ -1411,9 +1518,6 @@ function powerupIcon(kind: PowerupKind): string {
   if (kind === "nuke") {
     return "!";
   }
-  if (kind === "ammo_box") {
-    return "AMMO";
-  }
   return "x2";
 }
 
@@ -1421,21 +1525,32 @@ function powerupTextureKey(kind: PowerupKind): string | null {
   if (kind === "nuke") {
     return GRENADE_POWERUP_KEY;
   }
-  if (kind === "ammo_box") {
-    return AMMO_BOX_POWERUP_KEY;
-  }
   return null;
 }
 
-function powerupImageSize(kind: PowerupKind): { width: number; height: number } {
-  if (kind === "ammo_box") {
-    return { width: 60, height: 41 };
-  }
+function powerupImageSize(_kind: PowerupKind): { width: number; height: number } {
   return { width: 38, height: 42 };
 }
 
 function hasActivePowerup(player: PlayerSnapshot, kind: PowerupKind, now: number): boolean {
   return player.activePowerups.some((powerup) => powerup.kind === kind && powerup.expiresAt > now);
+}
+
+function upgradeCardRect(index: number, total: number): { x: number; y: number; width: number; height: number } {
+  const width = 238;
+  const height = 132;
+  const gap = 22;
+  const totalWidth = total * width + Math.max(0, total - 1) * gap;
+  return {
+    x: WORLD_WIDTH / 2 - totalWidth / 2 + index * (width + gap),
+    y: WORLD_HEIGHT / 2 - 40,
+    width,
+    height
+  };
+}
+
+function roman(value: number): string {
+  return ["", "I", "II", "III", "IV", "V"][Math.min(value, 5)] ?? `${value}`;
 }
 
 function formatClock(ms: number): string {
@@ -1446,7 +1561,7 @@ function formatClock(ms: number): string {
 }
 
 function startGame() {
-  new Phaser.Game({
+  game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: "app",
     backgroundColor: "#82b8d8",

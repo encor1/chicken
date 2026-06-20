@@ -13,9 +13,27 @@
         <label for="player-name">Name</label>
         <div class="join-row">
           <input id="player-name" name="player-name" maxlength="16" autocomplete="nickname" placeholder="Spielername" />
-          <button type="submit">Join</button>
         </div>
-        <p class="hint">Jeder Schuss läuft über den Server. Alle Spieler sehen dieselben Ziele und Treffer live.</p>
+        <div class="room-create">
+          <label for="room-name">Create room</label>
+          <div class="create-row">
+            <input id="room-name" name="room-name" maxlength="24" placeholder="Room name" />
+            <select id="room-mode" name="room-mode">
+              <option value="pve">PvE</option>
+              <option value="pvp">PvP</option>
+            </select>
+            <button type="submit">Create</button>
+          </div>
+        </div>
+        <div class="room-browser">
+          <div class="room-tabs" aria-label="Room filters">
+            <button class="room-tab is-active" type="button" data-room-filter="all">All</button>
+            <button class="room-tab" type="button" data-room-filter="pve">PvE</button>
+            <button class="room-tab" type="button" data-room-filter="pvp">PvP</button>
+          </div>
+          <div id="rooms-list" class="rooms-list" aria-live="polite"></div>
+        </div>
+        <p class="hint">Create a public room or join an existing one. PvE is a team run; PvP is the classic timed score race.</p>
       </div>
     </form>
     <div id="app"></div>

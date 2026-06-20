@@ -4,8 +4,6 @@ export const TICK_RATE = 30;
 export const SNAPSHOT_RATE = 20;
 export const MAX_TARGETS = 18;
 export const SHOT_COOLDOWN_MS = 160;
-export const MAGAZINE_SIZE = 6;
-export const RELOAD_DURATION_MS = 2100;
 export const MAX_POWERUPS = 4;
 export const POWERUP_DURATION_MS = 8000;
 export const POWERUP_TTL_MS = 11000;
@@ -18,8 +16,11 @@ export type Vec2 = {
   y: number;
 };
 
+export type GameMode = "pve" | "pvp";
+export type RoomFilter = "all" | GameMode;
 export type TargetKind = "cluck" | "runner" | "bonus" | "giant" | "royal";
-export type PowerupKind = "machine_gun" | "double_points" | "nuke" | "ammo_box";
+export type PowerupKind = "machine_gun" | "double_points" | "nuke";
+export type UpgradeKind = "rapid_fire" | "steady_hands" | "powerup_rush" | "score_surge";
 
 export type TargetSnapshot = {
   id: string;
@@ -42,9 +43,6 @@ export type PlayerSnapshot = {
   hits: number;
   streak: number;
   hue: number;
-  ammo: number;
-  magazineSize: number;
-  reloadEndsAt: number;
   aimX: number;
   aimY: number;
   activePowerups: ActivePowerupSnapshot[];
@@ -86,15 +84,46 @@ export type LeaderboardEntry = {
   shots: number;
 };
 
-export type RoundState = "active" | "ended";
+export type RoundState = "active" | "ended" | "run_over";
 
 export type RoundSnapshot = {
   number: number;
+  mode: GameMode;
+  wave: number;
   state: RoundState;
   startedAt: number;
   endsAt: number;
+  difficulty: number;
+  targetBudget: number;
+  teamScore: number;
+  morale: number;
+  maxMorale: number;
+  escapedTargets: number;
+  runUpgrades: CoopUpgradeSnapshot[];
   nextRoundStartsAt?: number;
   winner?: LeaderboardEntry;
+  upgradeOptions?: CoopUpgradeSnapshot[];
+  upgradeVotes?: Partial<Record<UpgradeKind, number>>;
+  playerUpgradeVotes?: Record<string, UpgradeKind>;
+  appliedUpgrade?: CoopUpgradeSnapshot;
+};
+
+export type CoopUpgradeSnapshot = {
+  kind: UpgradeKind;
+  title: string;
+  description: string;
+  stacks: number;
+};
+
+export type RoomSummary = {
+  id: string;
+  name: string;
+  mode: GameMode;
+  playerCount: number;
+  roundNumber: number;
+  wave: number;
+  state: RoundState;
+  createdAt: number;
 };
 
 export type TauntEvent = {
@@ -120,6 +149,7 @@ export type ServerMessage =
   | {
       type: "snapshot";
       serverTime: number;
+      room: RoomSummary;
       players: PlayerSnapshot[];
       targets: TargetSnapshot[];
       powerups: PowerupSnapshot[];
@@ -133,6 +163,7 @@ export type ClientMessage =
   | {
       type: "join";
       name: string;
+      roomId: string;
     }
   | {
       type: "shoot";
@@ -141,15 +172,16 @@ export type ClientMessage =
       seq: number;
     }
   | {
-      type: "reload";
-    }
-  | {
       type: "aim";
       x: number;
       y: number;
     }
   | {
       type: "taunt";
+    }
+  | {
+      type: "choose_upgrade";
+      kind: UpgradeKind;
     };
 
 export function clamp(value: number, min: number, max: number): number {
