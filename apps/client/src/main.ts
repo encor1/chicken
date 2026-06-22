@@ -36,6 +36,9 @@ const SPEEDY_CHICKEN_KEY = "chicken-speedy";
 const BONUS_CHICKEN_KEY = "chicken-bonus";
 const BOSS_CHICKEN_KEY = "chicken-boss";
 const GIANT_CHICKEN_KEY = "chicken-giant";
+const GAME_RENDER_SCALE = 2;
+const CANVAS_WIDTH = WORLD_WIDTH * GAME_RENDER_SCALE;
+const CANVAS_HEIGHT = WORLD_HEIGHT * GAME_RENDER_SCALE;
 const WEAPON_HUD_REST_X = 18;
 const WEAPON_HUD_REST_Y = -51;
 
@@ -252,7 +255,7 @@ class GalleryScene extends Phaser.Scene {
 
   create() {
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    this.cameras.main.setZoom(Math.min(window.innerWidth / WORLD_WIDTH, window.innerHeight / WORLD_HEIGHT));
+    this.cameras.main.setZoom(GAME_RENDER_SCALE);
     this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
 
     this.background = this.add.graphics();
@@ -287,6 +290,7 @@ class GalleryScene extends Phaser.Scene {
     this.crosshair = this.add.graphics().setDepth(90);
     this.tauntKey = this.input.keyboard!.addKey("M");
     this.tauntKey.on("down", () => this.taunt());
+    this.input.keyboard!.addKey("F").on("down", () => this.toggleFullscreen());
     this.input.setDefaultCursor("none");
     this.input.on("pointermove", this.drawCrosshair, this);
     this.input.on("pointerdown", this.shoot, this);
@@ -832,6 +836,19 @@ class GalleryScene extends Phaser.Scene {
     this.send({ type: "taunt" });
   }
 
+  private toggleFullscreen() {
+    if (!this.scale.fullscreen.available) {
+      return;
+    }
+
+    if (this.scale.isFullscreen) {
+      this.scale.stopFullscreen();
+      return;
+    }
+
+    this.scale.startFullscreen();
+  }
+
   private chooseUpgradeAt(pointer: Phaser.Input.Pointer) {
     const options = this.round?.upgradeOptions ?? [];
     if (options.length === 0) {
@@ -1021,7 +1038,8 @@ class GalleryScene extends Phaser.Scene {
   }
 
   private resizeGame(size: Phaser.Structs.Size) {
-    this.cameras.main.setZoom(Math.min(size.width / WORLD_WIDTH, size.height / WORLD_HEIGHT));
+    void size;
+    this.cameras.main.setZoom(GAME_RENDER_SCALE);
     this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
     this.hud?.layout();
   }
@@ -2147,10 +2165,12 @@ function startGame() {
     type: Phaser.AUTO,
     parent: "app",
     backgroundColor: "#82b8d8",
+    width: CANVAS_WIDTH,
+    height: CANVAS_HEIGHT,
     scale: {
-      mode: Phaser.Scale.RESIZE,
-      width: window.innerWidth,
-      height: window.innerHeight
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+      fullscreenTarget: "app"
     },
     scene: [GalleryScene]
   });
