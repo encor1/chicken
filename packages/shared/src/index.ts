@@ -11,6 +11,20 @@ export const MACHINE_GUN_COOLDOWN_MS = 35;
 export const ROUND_DURATION_MS = 90_000;
 export const ROUND_INTERMISSION_MS = 10_000;
 
+export const TARGET_SPAWN_AREA = {
+  left: 64,
+  top: 188,
+  right: WORLD_WIDTH - 64,
+  bottom: WORLD_HEIGHT - 172
+} as const;
+
+export const POWERUP_SPAWN_AREA = {
+  left: 92,
+  top: TARGET_SPAWN_AREA.top,
+  right: WORLD_WIDTH - 92,
+  bottom: TARGET_SPAWN_AREA.bottom - 18
+} as const;
+
 export type Vec2 = {
   x: number;
   y: number;

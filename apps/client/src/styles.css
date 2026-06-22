@@ -24,8 +24,10 @@ canvas {
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(180deg, rgba(255, 245, 194, 0.34) 0 16%, transparent 16%),
-    linear-gradient(180deg, #76b7dd 0 54%, #5f8c4a 54% 82%, #8c6239 82%);
+    linear-gradient(180deg, rgba(126, 220, 255, 0.28) 0 18%, rgba(7, 19, 29, 0) 18%),
+    linear-gradient(135deg, rgba(16, 34, 51, 0.22) 0 28%, transparent 28%),
+    linear-gradient(225deg, rgba(16, 34, 51, 0.2) 0 25%, transparent 25%),
+    linear-gradient(180deg, #76b7dd 0 54%, #6c934f 54% 82%, #8c6239 82%);
 }
 
 .start-screen::before {
@@ -39,24 +41,36 @@ canvas {
   opacity: 0.9;
 }
 
+.start-screen::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background:
+    linear-gradient(180deg, rgba(7, 19, 29, 0) 0 58%, rgba(7, 19, 29, 0.22) 100%),
+    linear-gradient(110deg, transparent 0 9%, rgba(16, 34, 51, 0.2) 9% 25%, transparent 25%),
+    linear-gradient(70deg, transparent 0 58%, rgba(16, 34, 51, 0.22) 58% 74%, transparent 74%);
+  pointer-events: none;
+}
+
 .start-screen.is-hidden {
   display: none;
 }
 
 .start-panel {
   position: relative;
-  z-index: 1;
-  width: min(720px, 100%);
-  padding: 28px;
-  border: 3px solid #263646;
+  z-index: 2;
+  width: min(760px, 100%);
+  padding: 26px;
+  border: 2px solid #2f9ed8;
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 250, 240, 0.92), rgba(247, 241, 220, 0.98)),
-    #f7f1dc;
+    linear-gradient(180deg, rgba(16, 34, 51, 0.9), rgba(7, 19, 29, 0.94)),
+    #07131d;
   box-shadow:
-    8px 8px 0 #263646,
-    0 18px 40px rgba(24, 35, 44, 0.24);
-  color: #263646;
+    0 0 0 6px rgba(47, 158, 216, 0.14),
+    0 18px 38px rgba(7, 19, 29, 0.42),
+    inset 0 1px 0 rgba(247, 251, 255, 0.16);
+  color: #f7fbff;
 }
 
 .kicker,
@@ -67,20 +81,22 @@ canvas {
 }
 
 .kicker {
-  color: #9a4f2f;
+  color: #49c7f5;
   text-transform: uppercase;
 }
 
 .hint {
   margin-top: 16px;
   line-height: 1.45;
-  color: #4b5f6f;
+  color: rgba(247, 251, 255, 0.76);
 }
 
 h1 {
   margin: 8px 0 22px;
+  color: #ffdf91;
   font-size: 42px;
   line-height: 1;
+  text-shadow: 0 2px 0 rgba(7, 19, 29, 0.72);
 }
 
 label {
@@ -89,6 +105,7 @@ label {
   font-size: 13px;
   font-weight: 900;
   text-transform: uppercase;
+  color: #49c7f5;
 }
 
 .join-row {
@@ -101,7 +118,7 @@ input,
 button,
 select {
   height: 46px;
-  border: 2px solid #263646;
+  border: 2px solid rgba(126, 220, 255, 0.42);
   border-radius: 6px;
   font: inherit;
   font-weight: 800;
@@ -110,27 +127,41 @@ select {
 input {
   min-width: 0;
   padding: 0 12px;
-  color: #263646;
-  background: #fffaf0;
+  color: #f7fbff;
+  background: rgba(7, 19, 29, 0.78);
+  outline: none;
 }
 
 select {
   padding: 0 12px;
-  color: #263646;
-  background: #fffaf0;
+  color: #f7fbff;
+  background: rgba(7, 19, 29, 0.78);
+  outline: none;
+}
+
+input::placeholder {
+  color: rgba(247, 251, 255, 0.46);
+}
+
+input:focus,
+select:focus-visible {
+  border-color: #ffdf91;
+  box-shadow: 0 0 0 4px rgba(255, 200, 87, 0.14);
 }
 
 button {
   padding: 0 18px;
-  color: #fffaf0;
-  background: #c04f3f;
-  box-shadow: inset 0 -4px 0 rgba(24, 35, 44, 0.24);
+  color: #07131d;
+  background: #ffc857;
+  box-shadow:
+    inset 0 -4px 0 rgba(7, 19, 29, 0.18),
+    0 0 18px rgba(255, 200, 87, 0.16);
   cursor: pointer;
 }
 
 button:hover,
 button:focus-visible {
-  background: #9f3e32;
+  background: #ffdf91;
 }
 
 .room-create,
@@ -154,13 +185,14 @@ button:focus-visible {
 .room-tab {
   height: 38px;
   padding: 0 12px;
-  color: #263646;
-  background: #fffaf0;
+  color: #f7fbff;
+  background: rgba(7, 19, 29, 0.62);
 }
 
 .room-tab.is-active {
-  color: #fffaf0;
-  background: #3e7181;
+  color: #07131d;
+  border-color: #49c7f5;
+  background: #49c7f5;
 }
 
 .rooms-list {
@@ -176,19 +208,22 @@ button:focus-visible {
   height: auto;
   min-height: 58px;
   padding: 9px 12px;
-  color: #263646;
+  border-color: rgba(126, 220, 255, 0.28);
+  color: #f7fbff;
   text-align: left;
-  background: #fffaf0;
-  box-shadow: none;
+  background: rgba(7, 19, 29, 0.68);
+  box-shadow: inset 0 1px 0 rgba(247, 251, 255, 0.08);
 }
 
 .room-row:hover,
 .room-row:focus-visible {
-  color: #fffaf0;
-  background: #3e7181;
+  color: #f7fbff;
+  border-color: #ffdf91;
+  background: rgba(16, 34, 51, 0.92);
 }
 
 .room-name {
+  color: #ffdf91;
   font-size: 16px;
   line-height: 1.2;
 }
@@ -198,16 +233,16 @@ button:focus-visible {
   font-size: 12px;
   line-height: 1.25;
   color: inherit;
-  opacity: 0.78;
+  opacity: 0.72;
 }
 
 .empty-rooms {
   min-height: 58px;
   display: grid;
   place-items: center;
-  border: 2px dashed rgba(38, 54, 70, 0.45);
+  border: 2px dashed rgba(126, 220, 255, 0.3);
   border-radius: 6px;
-  color: #4b5f6f;
+  color: rgba(247, 251, 255, 0.68);
   font-size: 14px;
   font-weight: 900;
 }

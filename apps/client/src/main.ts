@@ -5,11 +5,11 @@ import shotgunWeaponUrl from "./assets/weapons/shotgun.png";
 import {
   POWERUP_DURATION_MS,
   POWERUP_TTL_MS,
+  ROUND_DURATION_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
   type ClientMessage,
   type CoopUpgradeSnapshot,
-  type LeaderboardEntry,
   type PlayerSnapshot,
   type PowerupKind,
   type PowerupSnapshot,
@@ -26,6 +26,38 @@ import "./styles.css";
 const SHOTGUN_WEAPON_KEY = "weapon-shotgun";
 const MACHINE_GUN_WEAPON_KEY = "weapon-machine-gun";
 const GRENADE_POWERUP_KEY = "powerup-grenade";
+const WEAPON_HUD_REST_X = 18;
+const WEAPON_HUD_REST_Y = -51;
+
+const HUD_COLORS = {
+  panel: 0x07131d,
+  panelAlt: 0x102233,
+  line: 0x2f9ed8,
+  lineSoft: 0x7edcff,
+  gold: 0xffc857,
+  goldLight: 0xffdf91,
+  cyan: 0x49c7f5,
+  red: 0xf25f5c,
+  green: 0x78d66f,
+  white: 0xf7fbff
+};
+
+type HudEventKind = PowerupKind | "score" | "taunt";
+
+type HudEvent = {
+  kind: HudEventKind;
+  label: string;
+  value: string;
+  createdAt: number;
+};
+
+type GameHudState = {
+  player?: PlayerSnapshot;
+  round: RoundSnapshot | null;
+  room: RoomSummary | null;
+  now: number;
+  playerCount: number;
+};
 
 const params = new URLSearchParams(window.location.search);
 let playerName = "";
@@ -178,20 +210,13 @@ class GalleryScene extends Phaser.Scene {
   private readonly seenShots = new Set<string>();
   private readonly seenTaunts = new Set<string>();
   private players: PlayerSnapshot[] = [];
-  private leaderboardEntries: LeaderboardEntry[] = [];
-  private recentHits: string[] = [];
-  private statusText!: Phaser.GameObjects.Text;
-  private leaderboardText!: Phaser.GameObjects.Text;
-  private feedText!: Phaser.GameObjects.Text;
-  private recentText!: Phaser.GameObjects.Text;
+  private hud!: GameHud;
   private roundPanel!: Phaser.GameObjects.Graphics;
-  private roundTitle!: Phaser.GameObjects.Text;
   private roundSubtitle!: Phaser.GameObjects.Text;
   private roundMeta!: Phaser.GameObjects.Text;
   private readonly upgradeCardTitles: Phaser.GameObjects.Text[] = [];
   private readonly upgradeCardDescriptions: Phaser.GameObjects.Text[] = [];
   private readonly upgradeCardVotes: Phaser.GameObjects.Text[] = [];
-  private weaponHud!: WeaponHud;
   private crosshair!: Phaser.GameObjects.Graphics;
   private background!: Phaser.GameObjects.Graphics;
   private sfx!: SoundFx;
@@ -219,12 +244,9 @@ class GalleryScene extends Phaser.Scene {
     this.drawBackground();
     this.sfx = new SoundFx();
 
-    this.statusText = this.add.text(22, 18, "Connecting...", hudStyle(18, "#f5f7fa", "800")).setDepth(80);
-    this.leaderboardText = this.add.text(22, 54, "", hudStyle(14, "#e4ecf2", "700")).setDepth(80);
-    this.feedText = this.add.text(WORLD_WIDTH - 22, 18, "", hudStyle(14, "#ffdf91", "700")).setOrigin(1, 0).setDepth(80);
-    this.recentText = this.add.text(WORLD_WIDTH - 22, 54, "", hudStyle(13, "#f5f7fa", "700")).setOrigin(1, 0).setDepth(80);
+    this.hud = new GameHud(this);
+    this.hud.setConnectionStatus("Connecting...");
     this.roundPanel = this.add.graphics().setDepth(86);
-    this.roundTitle = this.add.text(WORLD_WIDTH / 2, 18, "", hudStyle(18, "#fffaf0", "900")).setOrigin(0.5, 0).setDepth(87);
     this.roundSubtitle = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10, "", hudStyle(28, "#ffdf91", "900")).setOrigin(0.5).setDepth(101);
     this.roundMeta = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42, "", hudStyle(18, "#f5f7fa", "800")).setOrigin(0.5).setDepth(101);
     for (let i = 0; i < 3; i += 1) {
@@ -246,8 +268,6 @@ class GalleryScene extends Phaser.Scene {
       this.upgradeCardDescriptions.push(description);
       this.upgradeCardVotes.push(votes);
     }
-    this.weaponHud = new WeaponHud(this, WORLD_WIDTH / 2, WORLD_HEIGHT - 84);
-
     this.crosshair = this.add.graphics().setDepth(90);
     this.tauntKey = this.input.keyboard!.addKey("M");
     this.tauntKey.on("down", () => this.taunt());
@@ -274,11 +294,14 @@ class GalleryScene extends Phaser.Scene {
     this.sendAim(this.input.activePointer);
     this.renderRound();
     const local = this.players.find((player) => player.id === this.playerId);
+    this.hud.render({
+      player: local,
+      round: this.round,
+      room: this.room,
+      now: this.serverNow(),
+      playerCount: this.players.length
+    });
     if (local) {
-      const accuracy = local.shots > 0 ? Math.round((local.hits / local.shots) * 100) : 0;
-      const scoreLabel = this.round?.mode === "pve" ? "wave score" : "score";
-      this.statusText.setText(`${local.name}  ${scoreLabel} ${local.score}  streak ${local.streak}  ${accuracy}%`);
-      this.renderWeaponHud(local);
       this.fireMachineGunIfHeld(local);
     }
   }
@@ -290,7 +313,7 @@ class GalleryScene extends Phaser.Scene {
     this.socket = new WebSocket(`${protocol}://${host}/ws`);
 
     this.socket.addEventListener("open", () => {
-      this.statusText.setText("Joining...");
+      this.hud.setConnectionStatus("Joining...");
       this.send({ type: "join", name: playerName, roomId: selectedRoomId });
     });
 
@@ -300,7 +323,7 @@ class GalleryScene extends Phaser.Scene {
     });
 
     this.socket.addEventListener("close", () => {
-      this.statusText.setText("Disconnected. Refresh to rejoin.");
+      this.hud.setConnectionStatus("Disconnected. Refresh to rejoin.");
     });
   }
 
@@ -312,10 +335,8 @@ class GalleryScene extends Phaser.Scene {
 
     this.players = message.players;
     this.room = message.room;
-    this.leaderboardEntries = message.leaderboard;
     this.serverTimeOffset = message.serverTime - Date.now();
     this.applyRoundSnapshot(message.round);
-    this.renderLeaderboard();
     this.syncTargets(message.targets);
     this.syncPowerups(message.powerups);
     this.syncRemoteCrosshairs(message.players);
@@ -331,8 +352,7 @@ class GalleryScene extends Phaser.Scene {
       if (round.state === "ended") {
         this.sfx.roundEnd();
       } else {
-        this.recentHits = [];
-        this.recentText.setText("");
+        this.hud.clearEvents();
         this.seenShots.clear();
         this.seenTaunts.clear();
         this.sfx.roundStart();
@@ -352,47 +372,23 @@ class GalleryScene extends Phaser.Scene {
     this.roundPanel.clear();
 
     if (this.round.state === "active") {
-      const remaining = Math.max(0, this.round.endsAt - now);
       this.roundPanel.setDepth(86);
-      this.roundTitle.setVisible(true);
       this.roundSubtitle.setVisible(false);
       this.roundMeta.setVisible(false);
       this.hideUpgradeCards();
-      this.roundPanel.fillStyle(0x18232c, 0.74);
-
-      if (this.round.mode === "pvp") {
-        this.roundTitle.setText(`PVP ROUND ${this.round.number}   ${formatClock(remaining)}`);
-        this.roundPanel.lineStyle(3, remaining < 10_000 ? 0xf25f5c : 0xffdf91, 0.9);
-        this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 154, 12, 308, 40, 8);
-        this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 154, 12, 308, 40, 8);
-        return;
-      }
-
-      const morale = Math.max(0, this.round.morale);
-      const moraleMax = Math.max(1, this.round.maxMorale);
-      const moraleRatio = Phaser.Math.Clamp(morale / moraleMax, 0, 1);
-      this.roundTitle.setText(`WAVE ${this.round.wave}   ${formatClock(remaining)}   TEAM ${this.round.teamScore}   MORALE ${morale}/${moraleMax}`);
-      this.roundPanel.lineStyle(3, moraleRatio < 0.25 || remaining < 10_000 ? 0xf25f5c : 0xffdf91, 0.9);
-      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 292, 12, 584, 58, 8);
-      this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 292, 12, 584, 58, 8);
-      this.roundPanel.fillStyle(0x111820, 0.55);
-      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 248, 51, 496, 9, 5);
-      this.roundPanel.fillStyle(moraleRatio < 0.25 ? 0xf25f5c : moraleRatio < 0.55 ? 0xffdf91 : 0x78d66f, 0.96);
-      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 248, 51, 496 * moraleRatio, 9, 5);
       return;
     }
 
     const nextRoundIn = Math.max(0, (this.round.nextRoundStartsAt ?? now) - now);
     this.roundPanel.setDepth(98);
-    this.roundTitle.setVisible(false);
     this.roundSubtitle.setVisible(true);
     this.roundMeta.setVisible(true);
 
     if (this.round.mode === "pvp") {
       this.hideUpgradeCards();
       const winner = this.round.winner;
-      this.roundSubtitle.setText(winner ? `${winner.name} wins round ${this.round.number}` : `Round ${this.round.number} complete`);
-      this.roundMeta.setText(winner ? `${winner.score} points  |  next round in ${Math.ceil(nextRoundIn / 1000)}s` : `Next round in ${Math.ceil(nextRoundIn / 1000)}s`);
+      this.roundSubtitle.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10).setText(winner ? `${winner.name} wins round ${this.round.number}` : `Round ${this.round.number} complete`);
+      this.roundMeta.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42).setText(winner ? `${winner.score} points  |  next round in ${Math.ceil(nextRoundIn / 1000)}s` : `Next round in ${Math.ceil(nextRoundIn / 1000)}s`);
       this.roundPanel.fillStyle(0x111820, 0.58);
       this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
       this.roundPanel.fillStyle(0x18232c, 0.92);
@@ -404,25 +400,37 @@ class GalleryScene extends Phaser.Scene {
 
     if (this.round.state === "run_over") {
       this.hideUpgradeCards();
-      this.roundSubtitle.setText("Run over");
-      this.roundMeta.setText(`Reached wave ${this.round.wave}  |  team score ${this.round.teamScore}  |  new run in ${Math.ceil(nextRoundIn / 1000)}s`);
-      this.roundPanel.fillStyle(0x111820, 0.68);
+      const panelX = WORLD_WIDTH / 2 - 330;
+      const panelY = WORLD_HEIGHT / 2 - 92;
+      const panelWidth = 660;
+      const panelHeight = 172;
+      this.roundSubtitle.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10).setText("RUN OVER");
+      this.roundMeta.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42).setText(`Reached wave ${this.round.wave}  |  team score ${this.round.teamScore}  |  new run in ${Math.ceil(nextRoundIn / 1000)}s`);
+      this.roundPanel.fillStyle(HUD_COLORS.panel, 0.52);
       this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-      this.roundPanel.fillStyle(0x241a20, 0.94);
-      this.roundPanel.lineStyle(5, 0xf25f5c, 0.95);
-      this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
-      this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 330, WORLD_HEIGHT / 2 - 92, 660, 172, 8);
+      drawHudPanel(this.roundPanel, panelX, panelY, panelWidth, panelHeight, 12);
+      this.roundPanel.lineStyle(1, HUD_COLORS.lineSoft, 0.18);
+      this.roundPanel.lineBetween(panelX + 44, panelY + 112, panelX + panelWidth - 44, panelY + 112);
+      this.roundPanel.fillStyle(HUD_COLORS.gold, 0.95);
+      this.roundPanel.fillRoundedRect(panelX + 190, panelY + 132, panelWidth - 380, 6, 3);
       return;
     }
 
-    this.roundSubtitle.setText(`Wave ${this.round.wave} complete`);
-    this.roundMeta.setText(`Team score ${this.round.teamScore}  |  morale ${this.round.morale}/${this.round.maxMorale}  |  choose an upgrade  |  next wave in ${Math.ceil(nextRoundIn / 1000)}s`);
-    this.roundPanel.fillStyle(0x111820, 0.58);
+    const panelX = WORLD_WIDTH / 2 - 420;
+    const panelY = WORLD_HEIGHT / 2 - 180;
+    const panelWidth = 840;
+    const panelHeight = 318;
+    this.roundSubtitle.setPosition(WORLD_WIDTH / 2, panelY + 48).setText(`Wave ${this.round.wave} complete`);
+    this.roundMeta
+      .setPosition(WORLD_WIDTH / 2, panelY + 86)
+      .setText(`Score ${this.round.teamScore}  |  Morale ${this.round.morale}/${this.round.maxMorale}  |  Next wave in ${Math.ceil(nextRoundIn / 1000)}s`);
+    this.roundPanel.fillStyle(HUD_COLORS.panel, 0.56);
     this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    this.roundPanel.fillStyle(0x18232c, 0.92);
-    this.roundPanel.lineStyle(5, 0xffdf91, 0.95);
-    this.roundPanel.fillRoundedRect(WORLD_WIDTH / 2 - 420, WORLD_HEIGHT / 2 - 178, 840, 300, 8);
-    this.roundPanel.strokeRoundedRect(WORLD_WIDTH / 2 - 420, WORLD_HEIGHT / 2 - 178, 840, 300, 8);
+    drawHudPanel(this.roundPanel, panelX, panelY, panelWidth, panelHeight, 12);
+    this.roundPanel.lineStyle(1, HUD_COLORS.lineSoft, 0.16);
+    this.roundPanel.lineBetween(panelX + 36, panelY + 112, panelX + panelWidth - 36, panelY + 112);
+    this.roundPanel.fillStyle(HUD_COLORS.gold, 0.95);
+    this.roundPanel.fillRoundedRect(panelX + 316, panelY + 104, panelWidth - 632, 6, 3);
     this.renderUpgradeCards(this.round.upgradeOptions ?? []);
   }
 
@@ -444,16 +452,20 @@ class GalleryScene extends Phaser.Scene {
 
       const rect = upgradeCardRect(i, options.length);
       const isSelected = selected === option.kind;
-      this.roundPanel.fillStyle(isSelected ? 0x2f4b3f : 0x263646, 0.98);
-      this.roundPanel.lineStyle(isSelected ? 5 : 3, isSelected ? 0x78d66f : 0xf7f1dc, isSelected ? 1 : 0.42);
+      this.roundPanel.fillStyle(isSelected ? 0x183a2d : HUD_COLORS.panelAlt, 0.96);
+      this.roundPanel.lineStyle(isSelected ? 4 : 2, isSelected ? HUD_COLORS.green : HUD_COLORS.lineSoft, isSelected ? 0.98 : 0.34);
       this.roundPanel.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, 8);
       this.roundPanel.strokeRoundedRect(rect.x, rect.y, rect.width, rect.height, 8);
+      this.roundPanel.fillStyle(isSelected ? HUD_COLORS.green : HUD_COLORS.line, isSelected ? 0.24 : 0.14);
+      this.roundPanel.fillRoundedRect(rect.x + 6, rect.y + 6, rect.width - 12, 34, 6);
+      this.roundPanel.lineStyle(1, HUD_COLORS.white, 0.12);
+      this.roundPanel.lineBetween(rect.x + 18, rect.y + rect.height - 42, rect.x + rect.width - 18, rect.y + rect.height - 42);
 
-      title.setVisible(true).setPosition(rect.x + rect.width / 2, rect.y + 18).setText(`${option.title}${option.stacks > 0 ? ` ${roman(option.stacks + 1)}` : ""}`);
+      title.setVisible(true).setPosition(rect.x + rect.width / 2, rect.y + 17).setText(`${option.title}${option.stacks > 0 ? ` ${roman(option.stacks + 1)}` : ""}`);
       description.setVisible(true).setPosition(rect.x + rect.width / 2, rect.y + 58).setText(option.description);
       votes
         .setVisible(true)
-        .setPosition(rect.x + rect.width / 2, rect.y + rect.height - 18)
+        .setPosition(rect.x + rect.width / 2, rect.y + rect.height - 17)
         .setText(`${this.round?.upgradeVotes?.[option.kind] ?? 0} vote${(this.round?.upgradeVotes?.[option.kind] ?? 0) === 1 ? "" : "s"}`);
     }
   }
@@ -505,47 +517,24 @@ class GalleryScene extends Phaser.Scene {
       } else if (shot.powerupKind === "nuke") {
         this.sfx.nuke();
       }
-      if (shot.powerupKind) {
-        this.recentHits.unshift(`${shot.playerName} ${powerupLabel(shot.powerupKind)}${shot.points > 0 ? ` +${shot.points}` : ""}`);
-        this.recentHits = this.recentHits.slice(0, 5);
-      } else if (shot.hit) {
-        this.recentHits.unshift(`${shot.playerName} +${shot.points}`);
-        this.recentHits = this.recentHits.slice(0, 5);
-      }
-    }
-    this.recentText.setText(this.recentHits.join("\n"));
 
-    const localHits = fresh.filter((shot) => shot.playerId === this.playerId && shot.hit);
-    if (localHits.length > 0) {
-      const latest = localHits.at(-1)!;
-      this.cameras.main.shake(latest.powerupKind === "nuke" ? 360 : latest.points >= 40 ? 170 : 100, latest.powerupKind === "nuke" ? 0.014 : latest.points >= 40 ? 0.0065 : 0.0038);
-      this.feedText.setText(latest.powerupKind ? `${powerupLabel(latest.powerupKind)}${latest.points > 0 ? ` +${latest.points}` : ""}` : `+${latest.points}`);
-      this.tweens.add({
-        targets: this.feedText,
-        alpha: { from: 1, to: 0 },
-        y: { from: 18, to: 42 },
-        duration: 620,
-        ease: "quad.out",
-        onComplete: () => {
-          this.feedText.setAlpha(1);
-          this.feedText.setY(18);
-          this.feedText.setText("");
-        }
-      });
+      if (shot.powerupKind || shot.hit) {
+        this.hud.pushEvent({
+          kind: shot.powerupKind ?? "score",
+          label: shot.powerupKind ? `${shot.playerName} ${powerupLabel(shot.powerupKind)}` : shot.playerName,
+          value: shot.points > 0 ? `+${shot.points}` : ""
+        });
+      }
+
+      if (shot.playerId === this.playerId && shot.hit) {
+        this.cameras.main.shake(shot.powerupKind === "nuke" ? 360 : shot.points >= 40 ? 170 : 100, shot.powerupKind === "nuke" ? 0.014 : shot.points >= 40 ? 0.0065 : 0.0038);
+      }
     }
   }
 
   private spawnShotFx(shot: ShotEvent) {
     const color = shot.powerupKind ? powerupColor(shot.powerupKind) : shot.hit ? colorFromHue(shot.playerHue) : 0xd6e2ea;
     const ring = this.add.circle(shot.x, shot.y, shot.hit ? 18 : 10, color, 0).setStrokeStyle(shot.hit ? 5 : 3, color, 0.95).setDepth(70);
-    const label = shot.hit
-      ? this.add.text(
-          shot.x,
-          shot.y - 34,
-          shot.powerupKind ? powerupLabel(shot.powerupKind) : `${shot.playerName} +${shot.points}`,
-          hudStyle(shot.points >= 40 || shot.powerupKind ? 24 : 18, "#ffdf91", "900")
-        ).setOrigin(0.5).setDepth(76)
-      : null;
 
     if (shot.powerupKind === "nuke") {
       this.spawnNukeFx(shot.x, shot.y);
@@ -568,18 +557,6 @@ class GalleryScene extends Phaser.Scene {
       ease: "quad.out",
       onComplete: () => ring.destroy()
     });
-
-    if (label) {
-      this.tweens.add({
-        targets: label,
-        y: label.y - 38,
-        scale: { from: 1.25, to: 0.95 },
-        alpha: 0,
-        duration: 760,
-        ease: "quad.out",
-        onComplete: () => label.destroy()
-      });
-    }
   }
 
   private spawnHitBurst(x: number, y: number, color: number, points: number) {
@@ -759,7 +736,7 @@ class GalleryScene extends Phaser.Scene {
     const machineGun = local ? hasActivePowerup(local, "machine_gun", Date.now()) : false;
     this.sfx.unlock();
 
-    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const point = this.pointerToWorldPoint(pointer);
     this.spawnMuzzleFlash(point.x, point.y);
     this.send({
       type: "shoot",
@@ -768,7 +745,7 @@ class GalleryScene extends Phaser.Scene {
       seq: this.seq++
     });
     this.sfx.shot(machineGun);
-    this.weaponHud.kick();
+    this.hud.kickWeapon();
   }
 
   private fireMachineGunIfHeld(local: PlayerSnapshot) {
@@ -808,7 +785,7 @@ class GalleryScene extends Phaser.Scene {
       return;
     }
 
-    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const point = this.pointerToWorldPoint(pointer);
     const option = options.find((_option, index) => {
       const rect = upgradeCardRect(index, options.length);
       return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
@@ -831,7 +808,7 @@ class GalleryScene extends Phaser.Scene {
       return;
     }
 
-    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const point = this.pointerToWorldPoint(pointer);
     this.send({
       type: "aim",
       x: point.x,
@@ -846,24 +823,11 @@ class GalleryScene extends Phaser.Scene {
     }
   }
 
-  private renderLeaderboard() {
-    const lines = this.leaderboardEntries.map((entry, index) => {
-      const accuracy = entry.shots > 0 ? Math.round((entry.hits / entry.shots) * 100) : 0;
-      return `${index + 1}. ${entry.name.padEnd(12)} ${entry.score.toString().padStart(4)}  ${accuracy}%`;
-    });
-
-    const roomName = this.room?.name ?? "Room";
-    const runLine =
-      this.round?.mode === "pvp"
-        ? `${roomName}  PVP  round ${this.round.number}  ${this.players.length} online`
-        : this.round
-          ? `${roomName}  ${this.round.state === "run_over" ? "RUN OVER" : "PVE RUN"}  wave ${this.round.wave}  morale ${this.round.morale}/${this.round.maxMorale}  team ${this.round.teamScore}  ${this.players.length} online`
-          : `${roomName}  ${this.players.length} online`;
-    this.leaderboardText.setText([runLine, ...lines].join("\n"));
-  }
-
-  private renderWeaponHud(local: PlayerSnapshot) {
-    this.weaponHud.render(local, Date.now());
+  private pointerToWorldPoint(pointer: Phaser.Input.Pointer) {
+    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    point.x = Phaser.Math.Clamp(point.x, 0, WORLD_WIDTH);
+    point.y = Phaser.Math.Clamp(point.y, 0, WORLD_HEIGHT);
+    return point;
   }
 
   private syncPowerups(snapshot: PowerupSnapshot[]) {
@@ -916,53 +880,34 @@ class GalleryScene extends Phaser.Scene {
     const fresh = taunts.filter((taunt) => !this.seenTaunts.has(taunt.id));
     for (const taunt of fresh) {
       this.seenTaunts.add(taunt.id);
-      this.recentHits.unshift(`${taunt.playerName}: ${taunt.text}`);
-      this.recentHits = this.recentHits.slice(0, 5);
-      this.spawnTaunt(taunt);
-    }
-    if (fresh.length > 0) {
-      this.recentText.setText(this.recentHits.join("\n"));
-    }
-  }
-
-  private spawnTaunt(taunt: TauntEvent) {
-    if (taunt.playerId !== this.playerId) {
-      this.sfx.taunt();
-    }
-    const label = this.add.text(taunt.x, taunt.y - 48, taunt.text.toUpperCase(), hudStyle(18, "#fffaf0", "900")).setOrigin(0.5).setDepth(92);
-    const bg = this.add.graphics().setDepth(91);
-    const bounds = label.getBounds();
-    bg.fillStyle(colorFromHue(taunt.playerHue), 0.92);
-    bg.lineStyle(3, 0x18232c, 0.95);
-    bg.fillRoundedRect(bounds.x - 10, bounds.y - 5, bounds.width + 20, bounds.height + 10, 8);
-    bg.strokeRoundedRect(bounds.x - 10, bounds.y - 5, bounds.width + 20, bounds.height + 10, 8);
-
-    this.tweens.add({
-      targets: [label, bg],
-      y: "-=34",
-      alpha: 0,
-      duration: 1800,
-      ease: "quad.out",
-      onComplete: () => {
-        label.destroy();
-        bg.destroy();
+      this.hud.pushEvent({
+        kind: "taunt",
+        label: `${taunt.playerName}: ${taunt.text}`,
+        value: ""
+      });
+      if (taunt.playerId !== this.playerId) {
+        this.sfx.taunt();
       }
-    });
+    }
   }
 
   private drawCrosshair(pointer: Phaser.Input.Pointer) {
-    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const point = this.pointerToWorldPoint(pointer);
     this.crosshair.clear();
-    this.crosshair.lineStyle(5, 0x18232c, 0.38);
-    this.crosshair.strokeCircle(point.x, point.y, 16);
-    this.crosshair.lineStyle(2, 0xf7f1dc, 0.95);
+    this.crosshair.lineStyle(4, 0x07131d, 0.34);
+    this.crosshair.strokeCircle(point.x, point.y, 15);
+    this.crosshair.lineBetween(point.x - 24, point.y, point.x - 8, point.y);
+    this.crosshair.lineBetween(point.x + 8, point.y, point.x + 24, point.y);
+    this.crosshair.lineBetween(point.x, point.y - 24, point.x, point.y - 8);
+    this.crosshair.lineBetween(point.x, point.y + 8, point.x, point.y + 24);
+    this.crosshair.lineStyle(2, 0xf7fbff, 0.96);
     this.crosshair.strokeCircle(point.x, point.y, 13);
-    this.crosshair.lineStyle(2, 0xffdf91, 0.92);
-    this.crosshair.strokeCircle(point.x, point.y, 4);
-    this.crosshair.lineBetween(point.x - 22, point.y, point.x - 7, point.y);
-    this.crosshair.lineBetween(point.x + 7, point.y, point.x + 22, point.y);
-    this.crosshair.lineBetween(point.x, point.y - 22, point.x, point.y - 7);
-    this.crosshair.lineBetween(point.x, point.y + 7, point.x, point.y + 22);
+    this.crosshair.lineBetween(point.x - 23, point.y, point.x - 8, point.y);
+    this.crosshair.lineBetween(point.x + 8, point.y, point.x + 23, point.y);
+    this.crosshair.lineBetween(point.x, point.y - 23, point.x, point.y - 8);
+    this.crosshair.lineBetween(point.x, point.y + 8, point.x, point.y + 23);
+    this.crosshair.fillStyle(0xffd45c, 0.98);
+    this.crosshair.fillCircle(point.x, point.y, 3.2);
   }
 
   private drawBackground() {
@@ -1025,7 +970,579 @@ class GalleryScene extends Phaser.Scene {
   private resizeGame(size: Phaser.Structs.Size) {
     this.cameras.main.setZoom(Math.min(size.width / WORLD_WIDTH, size.height / WORLD_HEIGHT));
     this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
-    this.weaponHud?.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT - 84);
+    this.hud?.layout();
+  }
+}
+
+class GameHud {
+  private readonly topStatus: TopStatusHud;
+  private readonly playerCard: PlayerCardHud;
+  private readonly eventFeed: EventFeedHud;
+  private readonly powerups: PowerupBadgesHud;
+  private readonly weaponPanel: WeaponPanelHud;
+
+  constructor(scene: Phaser.Scene) {
+    this.topStatus = new TopStatusHud(scene);
+    this.playerCard = new PlayerCardHud(scene);
+    this.eventFeed = new EventFeedHud(scene);
+    this.powerups = new PowerupBadgesHud(scene);
+    this.weaponPanel = new WeaponPanelHud(scene);
+    this.layout();
+  }
+
+  layout() {
+    this.playerCard.setPosition(18, 14);
+    this.topStatus.setPosition(WORLD_WIDTH / 2, 18);
+    this.eventFeed.setPosition(WORLD_WIDTH - 236, 16);
+    this.powerups.setPosition(WORLD_WIDTH - 204, WORLD_HEIGHT - 110);
+    this.weaponPanel.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT);
+  }
+
+  setConnectionStatus(status: string) {
+    this.playerCard.setConnectionStatus(status);
+  }
+
+  clearEvents() {
+    this.eventFeed.clear();
+  }
+
+  pushEvent(event: Omit<HudEvent, "createdAt">) {
+    this.eventFeed.push({ ...event, createdAt: Date.now() });
+  }
+
+  kickWeapon() {
+    this.weaponPanel.kick();
+  }
+
+  render(state: GameHudState) {
+    const active = state.round?.state === "active";
+    this.topStatus.setVisible(active);
+    this.powerups.setVisible(active);
+    this.weaponPanel.setVisible(active);
+    this.eventFeed.setVisible(active);
+
+    this.topStatus.render(state.round, state.room, state.now, state.playerCount);
+    this.playerCard.render(state.player);
+    this.eventFeed.render(state.now);
+    this.powerups.render(state.player, state.now);
+    this.weaponPanel.render(state.player, state.now);
+  }
+}
+
+class TopStatusHud {
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly panel: Phaser.GameObjects.Graphics;
+  private readonly waveText: Phaser.GameObjects.Text;
+  private readonly timerText: Phaser.GameObjects.Text;
+  private readonly scoreLabel: Phaser.GameObjects.Text;
+  private readonly scoreText: Phaser.GameObjects.Text;
+  private readonly moraleLabel: Phaser.GameObjects.Text;
+  private readonly moraleText: Phaser.GameObjects.Text;
+
+  constructor(scene: Phaser.Scene) {
+    this.panel = scene.add.graphics();
+    this.waveText = scene.add.text(-218, 36, "WAVE 1", hudStyle(22, "#f7fbff", "900")).setOrigin(0, 0.5);
+    this.timerText = scene.add.text(18, 36, "1:30", hudStyle(30, "#ffdf91", "900")).setOrigin(0.5, 0.5);
+    this.scoreLabel = scene.add.text(156, 18, "TEAM SCORE", hudStyle(11, "#49c7f5", "900")).setOrigin(0.5, 0.5);
+    this.scoreText = scene.add.text(156, 48, "0", hudStyle(24, "#f7fbff", "900")).setOrigin(0.5, 0.5);
+    this.moraleLabel = scene.add.text(280, 18, "MORALE", hudStyle(11, "#49c7f5", "900")).setOrigin(0.5, 0.5);
+    this.moraleText = scene.add.text(280, 48, "0/0", hudStyle(24, "#f7fbff", "900")).setOrigin(0.5, 0.5);
+    for (const text of [this.waveText, this.timerText, this.scoreLabel, this.scoreText, this.moraleLabel, this.moraleText]) {
+      text.setResolution(2);
+    }
+    this.root = scene.add.container(0, 0, [this.panel, this.waveText, this.timerText, this.scoreLabel, this.scoreText, this.moraleLabel, this.moraleText]).setDepth(88);
+  }
+
+  setPosition(x: number, y: number) {
+    this.root.setPosition(x, y);
+  }
+
+  setVisible(visible: boolean) {
+    this.root.setVisible(visible);
+  }
+
+  render(round: RoundSnapshot | null, room: RoomSummary | null, now: number, playerCount: number) {
+    if (!round) {
+      this.waveText.setText("JOINING");
+      this.timerText.setText("--:--");
+      this.scoreText.setText("0");
+      this.moraleText.setText(`${playerCount} online`);
+      this.draw(1);
+      return;
+    }
+
+    const remaining = Math.max(0, round.endsAt - now);
+    const moraleMax = Math.max(1, round.maxMorale);
+    const morale = Math.max(0, round.morale);
+    const moraleRatio = round.mode === "pve" ? Phaser.Math.Clamp(morale / moraleMax, 0, 1) : Phaser.Math.Clamp(remaining / ROUND_DURATION_MS, 0, 1);
+
+    this.waveText.setText(round.mode === "pve" ? `WAVE ${round.wave}` : `ROUND ${round.number}`);
+    this.timerText.setText(formatClock(remaining));
+    this.scoreLabel.setText(round.mode === "pve" ? "TEAM SCORE" : truncateHudText(room?.name ?? "ROOM", 14).toUpperCase());
+    this.scoreText.setText(round.mode === "pve" ? `${round.teamScore}` : `${playerCount} online`);
+    this.moraleLabel.setText(round.mode === "pve" ? "MORALE" : "STATE");
+    this.moraleText.setText(round.mode === "pve" ? `${morale}/${moraleMax}` : round.state.toUpperCase());
+    this.draw(moraleRatio);
+  }
+
+  private draw(progress: number) {
+    const width = 650;
+    const height = 104;
+    this.panel.clear();
+    drawHudPanel(this.panel, -width / 2, 0, width, height, 12);
+
+    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.12);
+    this.panel.lineBetween(-58, 18, -58, 64);
+    this.panel.lineBetween(92, 18, 92, 64);
+    this.panel.lineBetween(220, 18, 220, 64);
+
+    this.panel.fillStyle(HUD_COLORS.panel, 0.78);
+    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.32);
+    this.panel.fillRoundedRect(-284, 24, 42, 42, 8);
+    this.panel.strokeRoundedRect(-284, 24, 42, 42, 8);
+    this.panel.lineStyle(4, HUD_COLORS.gold, 0.95);
+    this.panel.lineBetween(-274, 44, -252, 44);
+    this.panel.lineBetween(-266, 35, -260, 53);
+    this.panel.lineBetween(-260, 35, -266, 53);
+
+    this.panel.lineStyle(5, HUD_COLORS.gold, 0.95);
+    this.panel.strokeCircle(-46, 36, 15);
+    this.panel.lineStyle(2, HUD_COLORS.goldLight, 0.95);
+    this.panel.lineBetween(-46, 36, -46, 25);
+    this.panel.lineBetween(-46, 36, -35, 36);
+
+    this.panel.fillStyle(HUD_COLORS.panel, 0.85);
+    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.24);
+    this.panel.fillRoundedRect(-248, 74, 496, 14, 7);
+    this.panel.strokeRoundedRect(-248, 74, 496, 14, 7);
+    this.panel.fillStyle(progress < 0.25 ? HUD_COLORS.red : HUD_COLORS.gold, 1);
+    this.panel.fillRoundedRect(-244, 78, 488 * progress, 6, 3);
+  }
+}
+
+class PlayerCardHud {
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly panel: Phaser.GameObjects.Graphics;
+  private readonly badgeText: Phaser.GameObjects.Text;
+  private readonly nameText: Phaser.GameObjects.Text;
+  private readonly scoreLabel: Phaser.GameObjects.Text;
+  private readonly scoreText: Phaser.GameObjects.Text;
+  private readonly streakText: Phaser.GameObjects.Text;
+  private readonly accuracyText: Phaser.GameObjects.Text;
+  private connectionStatus = "";
+
+  constructor(scene: Phaser.Scene) {
+    this.panel = scene.add.graphics();
+    this.badgeText = scene.add.text(70, 80, "MG", hudStyle(28, "#f7fbff", "900")).setOrigin(0.5);
+    this.nameText = scene.add.text(132, 30, "Michael", hudStyle(19, "#f7fbff", "900")).setOrigin(0, 0.5);
+    this.scoreLabel = scene.add.text(132, 68, "SCORE", hudStyle(11, "#49c7f5", "900")).setOrigin(0, 0.5);
+    this.scoreText = scene.add.text(132, 94, "0", hudStyle(26, "#ffdf91", "900")).setOrigin(0, 0.5);
+    this.streakText = scene.add.text(72, 142, "STREAK 0", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5, 0.5);
+    this.accuracyText = scene.add.text(196, 142, "ACCURACY 0%", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5, 0.5);
+    for (const text of [this.badgeText, this.nameText, this.scoreLabel, this.scoreText, this.streakText, this.accuracyText]) {
+      text.setResolution(2);
+    }
+    this.root = scene.add.container(0, 0, [this.panel, this.badgeText, this.nameText, this.scoreLabel, this.scoreText, this.streakText, this.accuracyText]).setDepth(88);
+    this.draw("MG");
+  }
+
+  setPosition(x: number, y: number) {
+    this.root.setPosition(x, y);
+  }
+
+  setConnectionStatus(status: string) {
+    this.connectionStatus = status;
+    this.nameText.setText(truncateHudText(status, 22));
+  }
+
+  render(player?: PlayerSnapshot) {
+    if (!player) {
+      this.badgeText.setText("--");
+      this.nameText.setText(truncateHudText(this.connectionStatus || "Joining...", 22));
+      this.scoreText.setText("0");
+      this.streakText.setText("STREAK 0");
+      this.accuracyText.setText("ACCURACY 0%");
+      this.draw("--");
+      return;
+    }
+
+    const accuracy = player.shots > 0 ? Math.round((player.hits / player.shots) * 100) : 0;
+    const badge = hasActivePowerup(player, "machine_gun", Date.now()) ? "MG" : "SG";
+    this.badgeText.setText(badge);
+    this.nameText.setText(truncateHudText(player.name, 15));
+    this.scoreText.setText(`${player.score}`);
+    this.streakText.setText(`STREAK ${player.streak}`);
+    this.accuracyText.setText(`ACCURACY ${accuracy}%`);
+    this.draw(badge);
+  }
+
+  private draw(badge: string) {
+    this.panel.clear();
+    drawHudPanel(this.panel, 0, 0, 258, 164, 12);
+    this.panel.fillStyle(HUD_COLORS.panel, 0.72);
+    this.panel.lineStyle(3, badge === "MG" ? HUD_COLORS.gold : HUD_COLORS.lineSoft, 0.9);
+    this.panel.fillCircle(70, 82, 48);
+    this.panel.strokeCircle(70, 82, 48);
+    this.panel.lineStyle(8, badge === "MG" ? HUD_COLORS.gold : HUD_COLORS.line, 0.12);
+    this.panel.strokeCircle(70, 82, 58);
+
+    this.panel.lineStyle(1, HUD_COLORS.lineSoft, 0.22);
+    this.panel.lineBetween(126, 44, 242, 44);
+    this.panel.lineBetween(126, 108, 242, 108);
+    this.panel.lineBetween(132, 126, 132, 156);
+  }
+}
+
+class EventFeedHud {
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly panel: Phaser.GameObjects.Graphics;
+  private readonly title: Phaser.GameObjects.Text;
+  private readonly rows: EventFeedRow[] = [];
+  private events: HudEvent[] = [];
+
+  constructor(scene: Phaser.Scene) {
+    this.panel = scene.add.graphics();
+    this.title = scene.add.text(110, 19, "EVENT FEED", hudStyle(15, "#f7fbff", "900")).setOrigin(0.5, 0.5);
+    this.title.setResolution(2);
+    this.root = scene.add.container(0, 0, [this.panel, this.title]).setDepth(88);
+
+    for (let i = 0; i < 3; i += 1) {
+      const row = new EventFeedRow(scene, 10, 42 + i * 34);
+      this.rows.push(row);
+      this.root.add(row.container);
+    }
+    this.draw(0);
+    this.renderRows(Date.now());
+  }
+
+  setPosition(x: number, y: number) {
+    this.root.setPosition(x, y);
+  }
+
+  setVisible(visible: boolean) {
+    this.root.setVisible(visible);
+  }
+
+  clear() {
+    this.events = [];
+    this.renderRows(Date.now());
+  }
+
+  push(event: HudEvent) {
+    this.events.unshift(event);
+    this.events = this.events.slice(0, 3);
+    this.renderRows(Date.now());
+  }
+
+  render(now: number) {
+    this.renderRows(now);
+  }
+
+  private renderRows(now: number) {
+    this.events = this.events.filter((event) => now - event.createdAt < 6000);
+    let visibleRows = 0;
+    for (let i = 0; i < this.rows.length; i += 1) {
+      const event = this.events[i];
+      const row = this.rows[i];
+      if (!event) {
+        row.setVisible(false);
+        continue;
+      }
+
+      const age = now - event.createdAt;
+      const alpha = age > 4200 ? Math.max(0.24, 1 - (age - 4200) / 1800) : 1;
+      row.setVisible(true);
+      row.render(event, alpha);
+      visibleRows += 1;
+    }
+    this.root.setAlpha(visibleRows === 0 ? 0.58 : 1);
+    this.draw(visibleRows);
+  }
+
+  private draw(visibleRows: number) {
+    const width = 220;
+    const height = visibleRows > 0 ? 44 + visibleRows * 34 : 42;
+    this.panel.clear();
+    drawHudPanel(this.panel, 0, 0, width, height, 12);
+    this.panel.lineStyle(1, HUD_COLORS.lineSoft, 0.2);
+    this.panel.lineBetween(12, 34, width - 12, 34);
+  }
+}
+
+class EventFeedRow {
+  readonly container: Phaser.GameObjects.Container;
+  private readonly graphics: Phaser.GameObjects.Graphics;
+  private readonly label: Phaser.GameObjects.Text;
+  private readonly value: Phaser.GameObjects.Text;
+
+  constructor(scene: Phaser.Scene, x: number, y: number) {
+    this.graphics = scene.add.graphics();
+    this.label = scene.add.text(42, 13, "", hudStyle(13, "#f7fbff", "900")).setOrigin(0, 0.5);
+    this.value = scene.add.text(192, 13, "", hudStyle(13, "#ffdf91", "900")).setOrigin(1, 0.5);
+    this.label.setResolution(2);
+    this.value.setResolution(2);
+    this.container = scene.add.container(x, y, [this.graphics, this.label, this.value]);
+  }
+
+  setVisible(visible: boolean) {
+    this.container.setVisible(visible);
+  }
+
+  render(event: HudEvent, alpha: number) {
+    const color = eventKindColor(event.kind);
+    this.container.setAlpha(alpha);
+    this.label.setText(truncateHudText(event.label, 15));
+    this.value.setText(event.value);
+    this.graphics.clear();
+    this.graphics.fillStyle(HUD_COLORS.panelAlt, 0.76);
+    this.graphics.lineStyle(1, HUD_COLORS.lineSoft, 0.24);
+    this.graphics.fillRoundedRect(0, 0, 200, 26, 7);
+    this.graphics.strokeRoundedRect(0, 0, 200, 26, 7);
+    this.graphics.fillStyle(color, 0.18);
+    this.graphics.lineStyle(2, color, 0.92);
+    this.graphics.fillCircle(17, 13, 11);
+    this.graphics.strokeCircle(17, 13, 11);
+    drawEventIcon(this.graphics, event.kind, 17, 13, color);
+  }
+}
+
+class PowerupBadgesHud {
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly slots: PowerupBadgeSlot[] = [];
+
+  constructor(scene: Phaser.Scene) {
+    this.root = scene.add.container(0, 0).setDepth(88);
+    for (let i = 0; i < 3; i += 1) {
+      const slot = new PowerupBadgeSlot(scene, i * 78, 0);
+      this.slots.push(slot);
+      this.root.add(slot.container);
+    }
+  }
+
+  setPosition(x: number, y: number) {
+    this.root.setPosition(x, y);
+  }
+
+  setVisible(visible: boolean) {
+    this.root.setVisible(visible);
+  }
+
+  render(player: PlayerSnapshot | undefined, now: number) {
+    const active = getActivePowerups(player, now);
+    for (let i = 0; i < this.slots.length; i += 1) {
+      const slot = this.slots[i];
+      const powerup = active[i];
+      if (!powerup) {
+        slot.setVisible(false);
+        continue;
+      }
+      slot.setVisible(true);
+      slot.render(powerup.kind, Math.max(0, powerup.expiresAt - now));
+    }
+  }
+}
+
+class PowerupBadgeSlot {
+  readonly container: Phaser.GameObjects.Container;
+  private readonly graphics: Phaser.GameObjects.Graphics;
+  private readonly iconText: Phaser.GameObjects.Text;
+  private readonly labelText: Phaser.GameObjects.Text;
+  private readonly timerText: Phaser.GameObjects.Text;
+
+  constructor(scene: Phaser.Scene, x: number, y: number) {
+    this.graphics = scene.add.graphics();
+    this.iconText = scene.add.text(0, 0, "", hudStyle(18, "#f7fbff", "900")).setOrigin(0.5);
+    this.labelText = scene.add.text(0, 48, "", hudStyle(10, "#49c7f5", "900")).setOrigin(0.5);
+    this.timerText = scene.add.text(0, 66, "", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5);
+    for (const text of [this.iconText, this.labelText, this.timerText]) {
+      text.setResolution(2);
+    }
+    this.container = scene.add.container(x, y, [this.graphics, this.iconText, this.labelText, this.timerText]);
+  }
+
+  setVisible(visible: boolean) {
+    this.container.setVisible(visible);
+  }
+
+  render(kind: PowerupKind, remainingMs: number) {
+    const color = powerupColor(kind);
+    const seconds = Math.ceil(remainingMs / 1000);
+    this.iconText.setText(powerupIcon(kind).toUpperCase());
+    this.labelText.setText(powerupLabel(kind).toUpperCase());
+    this.timerText.setText(`00:${seconds.toString().padStart(2, "0")}`);
+    this.graphics.clear();
+    this.graphics.lineStyle(10, color, 0.14);
+    this.graphics.strokeCircle(0, 0, 34);
+    this.graphics.fillStyle(HUD_COLORS.panel, 0.9);
+    this.graphics.lineStyle(4, color, 0.96);
+    this.graphics.fillCircle(0, 0, 30);
+    this.graphics.strokeCircle(0, 0, 30);
+    this.graphics.fillStyle(HUD_COLORS.panel, 0.92);
+    this.graphics.lineStyle(2, HUD_COLORS.lineSoft, 0.22);
+    this.graphics.fillRoundedRect(-46, 38, 92, 40, 7);
+    this.graphics.strokeRoundedRect(-46, 38, 92, 40, 7);
+  }
+}
+
+class WeaponPanelHud {
+  private readonly scene: Phaser.Scene;
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly panel: Phaser.GameObjects.Graphics;
+  private readonly weapon: Phaser.GameObjects.Container;
+  private readonly weaponShadow: Phaser.GameObjects.Ellipse;
+  private readonly shotgun: Phaser.GameObjects.Image;
+  private readonly machineGun: Phaser.GameObjects.Image;
+  private readonly title: Phaser.GameObjects.Text;
+  private readonly status: Phaser.GameObjects.Text;
+  private readonly fireRateLabel: Phaser.GameObjects.Text;
+  private readonly damageLabel: Phaser.GameObjects.Text;
+  private readonly stats: Phaser.GameObjects.Graphics;
+  private readonly buffPanel: Phaser.GameObjects.Graphics;
+  private readonly buffSlots: BuffSlotHud[] = [];
+  private activeWeapon: "shotgun" | "machine_gun" = "shotgun";
+
+  constructor(scene: Phaser.Scene) {
+    this.scene = scene;
+    this.panel = scene.add.graphics();
+    this.buffPanel = scene.add.graphics();
+    this.weapon = scene.add.container(WEAPON_HUD_REST_X, WEAPON_HUD_REST_Y);
+    this.weaponShadow = scene.add.ellipse(0, 34, 284, 20, 0x000000, 0.28);
+    this.shotgun = scene.add.image(0, -2, SHOTGUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(286, 82);
+    this.machineGun = scene.add.image(0, -1, MACHINE_GUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(268, 97).setAlpha(0);
+    this.weapon.add([this.weaponShadow, this.shotgun, this.machineGun]);
+
+    this.title = scene.add.text(0, -108, "SHOTGUN", hudStyle(18, "#f7fbff", "900")).setOrigin(0.5);
+    this.status = scene.add.text(-224, -42, "READY", hudStyle(13, "#ffdf91", "900")).setOrigin(0.5);
+    this.fireRateLabel = scene.add.text(202, -72, "FIRE RATE", hudStyle(10, "#49c7f5", "900")).setOrigin(0, 0.5);
+    this.damageLabel = scene.add.text(202, -38, "DAMAGE", hudStyle(10, "#49c7f5", "900")).setOrigin(0, 0.5);
+    this.stats = scene.add.graphics();
+    for (const text of [this.title, this.status, this.fireRateLabel, this.damageLabel]) {
+      text.setResolution(2);
+    }
+
+    this.root = scene.add.container(0, 0, [this.buffPanel, this.panel, this.title, this.weapon, this.status, this.fireRateLabel, this.damageLabel, this.stats]).setDepth(87);
+    for (let i = 0; i < 6; i += 1) {
+      const slot = new BuffSlotHud(scene, -236 + i * 30, -106);
+      this.buffSlots.push(slot);
+      this.root.add(slot.container);
+    }
+    this.drawShell();
+  }
+
+  setPosition(x: number, y: number) {
+    this.root.setPosition(x, y);
+  }
+
+  setVisible(visible: boolean) {
+    this.root.setVisible(visible);
+  }
+
+  render(player: PlayerSnapshot | undefined, now: number) {
+    const activePowerups = getActivePowerups(player, now);
+    const machineGunActive = Boolean(player && hasActivePowerup(player, "machine_gun", now));
+    this.renderWeapon(machineGunActive ? "machine_gun" : "shotgun");
+    this.title.setText(machineGunActive ? "MACHINE GUN" : "SHOTGUN");
+    this.status.setText(machineGunActive ? "ACTIVE" : "READY");
+    this.drawStats(machineGunActive);
+
+    for (let i = 0; i < this.buffSlots.length; i += 1) {
+      const powerup = activePowerups[i];
+      this.buffSlots[i].render(powerup?.kind);
+    }
+  }
+
+  kick() {
+    this.scene.tweens.killTweensOf(this.weapon);
+    this.weapon.setPosition(WEAPON_HUD_REST_X, WEAPON_HUD_REST_Y);
+    this.weapon.setAngle(0);
+    const machineGunKick = this.activeWeapon === "machine_gun";
+    this.scene.tweens.add({
+      targets: this.weapon,
+      x: { from: WEAPON_HUD_REST_X + (machineGunKick ? -8 : -14), to: WEAPON_HUD_REST_X },
+      y: { from: WEAPON_HUD_REST_Y + (machineGunKick ? 4 : 10), to: WEAPON_HUD_REST_Y },
+      angle: { from: machineGunKick ? -1 : -2, to: 0 },
+      duration: machineGunKick ? 92 : 170,
+      ease: "back.out"
+    });
+  }
+
+  private renderWeapon(activeWeapon: "shotgun" | "machine_gun") {
+    if (activeWeapon === this.activeWeapon) {
+      return;
+    }
+
+    this.activeWeapon = activeWeapon;
+    this.scene.tweens.killTweensOf([this.shotgun, this.machineGun]);
+    this.scene.tweens.add({
+      targets: this.shotgun,
+      alpha: activeWeapon === "shotgun" ? 1 : 0,
+      duration: 120,
+      ease: "quad.out"
+    });
+    this.scene.tweens.add({
+      targets: this.machineGun,
+      alpha: activeWeapon === "machine_gun" ? 1 : 0,
+      duration: 120,
+      ease: "quad.out"
+    });
+  }
+
+  private drawShell() {
+    this.panel.clear();
+    drawHudPanel(this.panel, -290, -132, 580, 124, 12);
+    this.panel.lineStyle(1, HUD_COLORS.lineSoft, 0.16);
+    this.panel.lineBetween(-164, -90, -164, -34);
+    this.panel.lineBetween(178, -90, 178, -34);
+    this.panel.fillStyle(HUD_COLORS.panel, 0.58);
+    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.18);
+    this.panel.fillRoundedRect(-266, -88, 96, 58, 7);
+    this.panel.strokeRoundedRect(-266, -88, 96, 58, 7);
+    this.panel.fillStyle(HUD_COLORS.gold, 0.95);
+    for (let i = 0; i < 4; i += 1) {
+      this.panel.fillRoundedRect(-244 + i * 12, -74, 6, 24, 3);
+    }
+
+    this.buffPanel.clear();
+    this.buffPanel.fillStyle(HUD_COLORS.panel, 0.86);
+    this.buffPanel.lineStyle(2, HUD_COLORS.line, 0.5);
+    this.buffPanel.fillRoundedRect(-254, -122, 194, 32, 8);
+    this.buffPanel.strokeRoundedRect(-254, -122, 194, 32, 8);
+  }
+
+  private drawStats(machineGunActive: boolean) {
+    const fireRate = machineGunActive ? 8 : 3;
+    const damage = machineGunActive ? 5 : 8;
+    this.stats.clear();
+    this.stats.fillStyle(HUD_COLORS.panel, 0.42);
+    this.stats.lineStyle(1, HUD_COLORS.lineSoft, 0.18);
+    this.stats.fillRoundedRect(190, -94, 78, 64, 7);
+    this.stats.strokeRoundedRect(190, -94, 78, 64, 7);
+    drawMeterBlocks(this.stats, 202, -60, 8, fireRate, HUD_COLORS.cyan);
+    drawMeterBlocks(this.stats, 202, -28, 8, damage, HUD_COLORS.gold);
+  }
+}
+
+class BuffSlotHud {
+  readonly container: Phaser.GameObjects.Container;
+  private readonly graphics: Phaser.GameObjects.Graphics;
+  private readonly label: Phaser.GameObjects.Text;
+
+  constructor(scene: Phaser.Scene, x: number, y: number) {
+    this.graphics = scene.add.graphics();
+    this.label = scene.add.text(0, 0, "", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5);
+    this.label.setResolution(2);
+    this.container = scene.add.container(x, y, [this.graphics, this.label]);
+  }
+
+  render(kind?: PowerupKind) {
+    this.graphics.clear();
+    const active = Boolean(kind);
+    const color = kind ? powerupColor(kind) : HUD_COLORS.lineSoft;
+    this.graphics.fillStyle(active ? HUD_COLORS.panelAlt : HUD_COLORS.panel, active ? 0.9 : 0.72);
+    this.graphics.lineStyle(active ? 3 : 2, color, active ? 0.95 : 0.28);
+    this.graphics.fillRoundedRect(-13, -13, 26, 26, 6);
+    this.graphics.strokeRoundedRect(-13, -13, 26, 26, 6);
+    this.label.setText(kind ? powerupIcon(kind).toUpperCase() : "");
   }
 }
 
@@ -1044,11 +1561,11 @@ class PowerupView {
     this.target = snapshot;
     const color = powerupColor(snapshot.kind);
 
-    this.halo = scene.add.circle(0, 0, snapshot.radius + 8, color, 0.18).setStrokeStyle(4, color, 0.85);
-    this.star = scene.add.star(0, 0, 8, snapshot.radius * 0.78, snapshot.radius * 1.42, color, 0.34);
-    this.core = scene.add.circle(0, 0, snapshot.radius, 0x18232c, 0.86).setStrokeStyle(4, color, 1);
+    this.halo = scene.add.circle(0, 0, snapshot.radius + 10, color, 0.2).setStrokeStyle(5, color, 0.92);
+    this.star = scene.add.star(0, 0, 8, snapshot.radius * 0.72, snapshot.radius * 1.38, color, 0.28);
+    this.core = scene.add.circle(0, 0, snapshot.radius, HUD_COLORS.panel, 0.9).setStrokeStyle(4, color, 1);
     this.icon = this.createIcon(scene, snapshot.kind);
-    this.label = scene.add.text(0, snapshot.radius + 24, powerupLabel(snapshot.kind).toUpperCase(), hudStyle(11, "#fffaf0", "900")).setOrigin(0.5);
+    this.label = scene.add.text(0, snapshot.radius + 24, "", hudStyle(11, "#fffaf0", "900")).setOrigin(0.5).setVisible(false);
     this.label.setResolution(2);
     this.timer = scene.add.graphics();
     this.group = scene.add.container(snapshot.x, snapshot.y, [this.halo, this.star, this.core, this.icon, this.label, this.timer]).setDepth(55);
@@ -1281,106 +1798,6 @@ class SoundFx {
   }
 }
 
-class WeaponHud {
-  private readonly scene: Phaser.Scene;
-  private readonly root: Phaser.GameObjects.Container;
-  private readonly weapon: Phaser.GameObjects.Container;
-  private readonly weaponShadow: Phaser.GameObjects.Ellipse;
-  private readonly shotgun: Phaser.GameObjects.Image;
-  private readonly machineGun: Phaser.GameObjects.Image;
-  private readonly status: Phaser.GameObjects.Text;
-  private readonly buffPanel: Phaser.GameObjects.Graphics;
-  private readonly buffText: Phaser.GameObjects.Text;
-  private activeWeapon: "shotgun" | "machine_gun" = "shotgun";
-
-  constructor(scene: Phaser.Scene, x: number, y: number) {
-    this.scene = scene;
-    this.root = scene.add.container(x, y).setDepth(85);
-    this.weapon = scene.add.container(0, 0);
-    this.weaponShadow = scene.add.ellipse(0, 42, 392, 32, 0x111820, 0.34);
-    this.shotgun = scene.add.image(0, 2, SHOTGUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(414, 119);
-    this.machineGun = scene.add.image(0, 4, MACHINE_GUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(356, 129).setAlpha(0);
-    this.status = scene.add.text(0, 58, "READY", hudStyle(14, "#f7f1dc", "900")).setOrigin(0.5);
-    this.buffPanel = scene.add.graphics();
-    this.buffText = scene.add.text(0, -126, "", hudStyle(15, "#fffaf0", "900")).setOrigin(0.5);
-    this.status.setResolution(2);
-    this.buffText.setResolution(2);
-
-    this.weapon.add([this.weaponShadow, this.shotgun, this.machineGun]);
-    this.root.add([this.buffPanel, this.weapon, this.status, this.buffText]);
-  }
-
-  setPosition(x: number, y: number) {
-    this.root.setPosition(x, y);
-  }
-
-  render(player: PlayerSnapshot, now: number) {
-    const activePowerups = player.activePowerups
-      .filter((powerup) => powerup.expiresAt > now)
-      .map((powerup) => `${powerupLabel(powerup.kind)} ${Math.ceil((powerup.expiresAt - now) / 1000)}s`);
-    const machineGunActive = hasActivePowerup(player, "machine_gun", now);
-    this.renderWeapon(machineGunActive ? "machine_gun" : "shotgun");
-    this.renderBuffMonitor(activePowerups);
-    this.status.setText(machineGunActive ? "MACHINE GUN" : "READY");
-  }
-
-  private renderWeapon(activeWeapon: "shotgun" | "machine_gun") {
-    if (activeWeapon === this.activeWeapon) {
-      return;
-    }
-
-    this.activeWeapon = activeWeapon;
-    this.scene.tweens.killTweensOf([this.shotgun, this.machineGun]);
-    this.scene.tweens.add({
-      targets: this.shotgun,
-      alpha: activeWeapon === "shotgun" ? 1 : 0,
-      duration: 120,
-      ease: "quad.out"
-    });
-    this.scene.tweens.add({
-      targets: this.machineGun,
-      alpha: activeWeapon === "machine_gun" ? 1 : 0,
-      duration: 120,
-      ease: "quad.out"
-    });
-  }
-
-  private renderBuffMonitor(activePowerups: string[]) {
-    this.buffPanel.clear();
-    if (activePowerups.length === 0) {
-      this.buffText.setText("BUFFS  none");
-      this.buffPanel.fillStyle(0x18232c, 0.68);
-      this.buffPanel.lineStyle(2, 0xf7f1dc, 0.28);
-      this.buffPanel.fillRoundedRect(-120, -144, 240, 38, 8);
-      this.buffPanel.strokeRoundedRect(-120, -144, 240, 38, 8);
-      return;
-    }
-
-    const text = `BUFFS  ${activePowerups.join("   ")}`;
-    const width = Math.min(560, Math.max(260, text.length * 9.5));
-    this.buffText.setText(text);
-    this.buffPanel.fillStyle(0x18232c, 0.86);
-    this.buffPanel.lineStyle(4, 0xffdf91, 0.92);
-    this.buffPanel.fillRoundedRect(-width / 2, -148, width, 46, 8);
-    this.buffPanel.strokeRoundedRect(-width / 2, -148, width, 46, 8);
-  }
-
-  kick() {
-    this.scene.tweens.killTweensOf(this.weapon);
-    this.weapon.setPosition(0, 0);
-    this.weapon.setAngle(0);
-    const machineGunKick = this.activeWeapon === "machine_gun";
-    this.scene.tweens.add({
-      targets: this.weapon,
-      x: { from: machineGunKick ? -10 : -18, to: 0 },
-      y: { from: machineGunKick ? 4 : 8, to: 0 },
-      angle: { from: machineGunKick ? -1 : -2, to: 0 },
-      duration: machineGunKick ? 92 : 170,
-      ease: "back.out"
-    });
-  }
-}
-
 class TargetView {
   private readonly group: Phaser.GameObjects.Container;
   private readonly shadow: Phaser.GameObjects.Ellipse;
@@ -1414,12 +1831,13 @@ class TargetView {
     this.head.setStrokeStyle(2, 0x7f5539, 0.82);
     this.beak.setStrokeStyle(2, 0x9a6a13, 0.9);
     const signY = snapshot.radius + Math.max(18, snapshot.radius * 0.36);
-    this.badge = scene.add.ellipse(0, signY, Math.max(52, snapshot.radius * 1.25), Math.max(30, snapshot.radius * 0.5), 0xffdf91, 1);
-    this.badge.setStrokeStyle(4, 0x18232c, 1);
-    this.label = scene.add.text(0, signY, `${snapshot.points}`, scoreStyle(snapshot.kind === "royal" ? 26 : snapshot.kind === "giant" ? 28 : 20)).setOrigin(0.5);
+    this.badge = scene.add.ellipse(0, signY, Math.max(64, snapshot.radius * 1.42), Math.max(28, snapshot.radius * 0.46), HUD_COLORS.panel, 0.9);
+    this.badge.setStrokeStyle(3, HUD_COLORS.gold, 0.95);
+    this.label = scene.add.text(0, signY, `${snapshot.points} ♥`, hudStyle(snapshot.kind === "royal" ? 17 : snapshot.kind === "giant" ? 18 : 15, "#f7fbff", "900")).setOrigin(0.5);
     this.label.setResolution(2);
     this.group = scene.add.container(snapshot.x, snapshot.y, [this.shadow, this.tail, this.wingA, this.wingB, this.body, highlight, this.head, this.eye, this.beak, this.badge, this.label]).setDepth(snapshot.kind === "giant" || snapshot.kind === "royal" ? 45 : 20);
     this.group.scaleX = snapshot.facing;
+    this.label.scaleX = snapshot.facing;
 
     if (snapshot.kind === "royal") {
       const aura = scene.add.circle(0, 0, snapshot.radius * 1.25, 0xffdf91, 0).setStrokeStyle(5, 0xffdf91, 0.5);
@@ -1467,6 +1885,106 @@ function paletteFor(kind: TargetSnapshot["kind"]) {
   return { body: 0xebe3cf, wing: 0x7f5539 };
 }
 
+function drawHudPanel(graphics: Phaser.GameObjects.Graphics, x: number, y: number, width: number, height: number, radius: number) {
+  graphics.fillStyle(0x000000, 0.22);
+  graphics.fillRoundedRect(x + 4, y + 6, width, height, radius);
+  graphics.lineStyle(9, HUD_COLORS.line, 0.12);
+  graphics.strokeRoundedRect(x - 1, y - 1, width + 2, height + 2, radius + 2);
+  graphics.fillStyle(HUD_COLORS.panel, 0.9);
+  graphics.fillRoundedRect(x, y, width, height, radius);
+  graphics.fillStyle(HUD_COLORS.panelAlt, 0.34);
+  graphics.fillRoundedRect(x + 5, y + 5, width - 10, Math.max(18, height * 0.42), Math.max(4, radius - 2));
+  graphics.lineStyle(2, HUD_COLORS.line, 0.82);
+  graphics.strokeRoundedRect(x, y, width, height, radius);
+  graphics.lineStyle(1, HUD_COLORS.white, 0.18);
+  graphics.strokeRoundedRect(x + 4, y + 4, width - 8, height - 8, Math.max(3, radius - 3));
+}
+
+function drawMeterBlocks(graphics: Phaser.GameObjects.Graphics, x: number, y: number, count: number, filled: number, color: number) {
+  for (let i = 0; i < count; i += 1) {
+    graphics.fillStyle(i < filled ? color : HUD_COLORS.lineSoft, i < filled ? 0.96 : 0.16);
+    graphics.fillRoundedRect(x + i * 8, y, 6, 14, 2);
+  }
+}
+
+function drawEventIcon(graphics: Phaser.GameObjects.Graphics, kind: HudEventKind, x: number, y: number, color: number) {
+  graphics.lineStyle(2, HUD_COLORS.white, 0.9);
+  graphics.fillStyle(HUD_COLORS.white, 0.9);
+  if (kind === "score") {
+    graphics.beginPath();
+    for (let i = 0; i < 5; i += 1) {
+      const angle = -Math.PI / 2 + (Math.PI * 2 * i) / 5;
+      const next = angle + Math.PI / 5;
+      const outerX = x + Math.cos(angle) * 7;
+      const outerY = y + Math.sin(angle) * 7;
+      const innerX = x + Math.cos(next) * 3;
+      const innerY = y + Math.sin(next) * 3;
+      if (i === 0) {
+        graphics.moveTo(outerX, outerY);
+      } else {
+        graphics.lineTo(outerX, outerY);
+      }
+      graphics.lineTo(innerX, innerY);
+    }
+    graphics.closePath();
+    graphics.fillPath();
+    return;
+  }
+
+  if (kind === "machine_gun") {
+    graphics.lineStyle(3, color, 0.95);
+    graphics.lineBetween(x - 8, y, x + 8, y);
+    graphics.lineBetween(x + 4, y - 4, x + 9, y - 4);
+    graphics.lineBetween(x - 6, y + 4, x - 2, y + 8);
+    return;
+  }
+
+  if (kind === "nuke") {
+    graphics.lineStyle(2, color, 0.95);
+    graphics.strokeCircle(x, y, 7);
+    graphics.lineBetween(x - 5, y - 5, x + 5, y + 5);
+    graphics.lineBetween(x + 5, y - 5, x - 5, y + 5);
+    return;
+  }
+
+  if (kind === "taunt") {
+    graphics.lineStyle(2, color, 0.95);
+    graphics.strokeRoundedRect(x - 8, y - 6, 16, 12, 4);
+    graphics.lineBetween(x - 2, y + 6, x - 6, y + 10);
+    return;
+  }
+
+  graphics.fillStyle(color, 0.95);
+  graphics.fillCircle(x, y, 5);
+}
+
+function eventKindColor(kind: HudEventKind) {
+  if (kind === "machine_gun") {
+    return HUD_COLORS.red;
+  }
+  if (kind === "nuke") {
+    return HUD_COLORS.cyan;
+  }
+  if (kind === "double_points") {
+    return HUD_COLORS.gold;
+  }
+  if (kind === "taunt") {
+    return HUD_COLORS.lineSoft;
+  }
+  return HUD_COLORS.goldLight;
+}
+
+function truncateHudText(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function getActivePowerups(player: PlayerSnapshot | undefined, now: number) {
+  return [...(player?.activePowerups ?? [])].filter((powerup) => powerup.expiresAt > now).sort((a, b) => a.expiresAt - b.expiresAt);
+}
+
 function hudStyle(fontSize: number, color: string, fontStyle: string): Phaser.Types.GameObjects.Text.TextStyle {
   return {
     color,
@@ -1475,15 +1993,6 @@ function hudStyle(fontSize: number, color: string, fontStyle: string): Phaser.Ty
     fontStyle,
     stroke: "#1d2b35",
     strokeThickness: 3
-  };
-}
-
-function scoreStyle(fontSize: number): Phaser.Types.GameObjects.Text.TextStyle {
-  return {
-    color: "#111820",
-    fontFamily: "Arial Black, Inter, Arial, sans-serif",
-    fontSize: `${fontSize}px`,
-    fontStyle: "900"
   };
 }
 

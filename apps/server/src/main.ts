@@ -12,10 +12,12 @@ import {
   MAX_TARGETS,
   POWERUP_DURATION_MS,
   POWERUP_TTL_MS,
+  POWERUP_SPAWN_AREA,
   ROUND_DURATION_MS,
   ROUND_INTERMISSION_MS,
   SHOT_COOLDOWN_MS,
   SNAPSHOT_RATE,
+  TARGET_SPAWN_AREA,
   TICK_RATE,
   WORLD_HEIGHT,
   WORLD_WIDTH,
@@ -297,9 +299,11 @@ function stepWorld() {
       target.age += dt;
       target.x += target.vx * dt;
       target.y += Math.sin(target.age * target.wobble) * target.vy * dt;
+      const targetBounds = getTargetVerticalBounds(target.radius);
+      target.y = clamp(target.y, targetBounds.top, targetBounds.bottom);
       target.flap = (target.flap + dt * 9) % (Math.PI * 2);
 
-      const outside = target.x < -140 || target.x > WORLD_WIDTH + 140 || target.y < 20 || target.y > WORLD_HEIGHT - 40;
+      const outside = target.x < -140 || target.x > WORLD_WIDTH + 140;
       if (outside || target.age > target.ttl) {
         room.targets.delete(target.id);
         if (room.mode === "pve") {
@@ -442,7 +446,7 @@ function findPowerup(room: GameRoom, x: number, y: number): Powerup | null {
   let bestDistance = Number.POSITIVE_INFINITY;
 
   for (const powerup of room.powerups.values()) {
-    const leniency = powerup.radius + 10;
+    const leniency = powerup.radius + 18;
     const dist = distanceSquared({ x, y }, powerup);
     if (dist <= leniency * leniency && dist < bestDistance) {
       best = powerup;
@@ -877,7 +881,6 @@ function spawnTarget(room: GameRoom, initial: boolean) {
   const fromLeft = Math.random() < 0.5;
   const isGiant = kind === "giant";
   const isRoyal = kind === "royal";
-  const baseY = isGiant || isRoyal ? WORLD_HEIGHT - 230 - Math.random() * 95 : 90 + Math.random() * (WORLD_HEIGHT - 220);
   const speedMultiplier = getDifficulty(room, room.round.wave);
   const baseSpeed = isGiant
     ? 95 + Math.random() * 45
@@ -890,6 +893,8 @@ function spawnTarget(room: GameRoom, initial: boolean) {
         : 150 + Math.random() * 80;
   const speed = baseSpeed * speedMultiplier;
   const radius = isGiant ? 78 : isRoyal ? 48 : kind === "bonus" ? 18 : kind === "runner" ? 23 : 30;
+  const verticalBounds = getTargetVerticalBounds(radius);
+  const baseY = randomInRange(verticalBounds.top, verticalBounds.bottom);
   const x = initial ? getInitialTargetX(fromLeft) : fromLeft ? -radius * 2.4 : WORLD_WIDTH + radius * 2.4;
   const id = `t${room.nextTargetId++}`;
 
@@ -921,6 +926,15 @@ function getInitialTargetX(fromLeft: boolean) {
   return fromLeft ? padding + Math.random() * laneWidth : WORLD_WIDTH - padding - Math.random() * laneWidth;
 }
 
+function getTargetVerticalBounds(radius: number) {
+  const labelClearance = radius + Math.max(18, radius * 0.36) + 12;
+  const bottom = Math.min(TARGET_SPAWN_AREA.bottom - radius, WORLD_HEIGHT - 132 - labelClearance);
+  return {
+    top: TARGET_SPAWN_AREA.top + radius,
+    bottom
+  };
+}
+
 function randomKind(room: GameRoom): TargetKind {
   const hasGiant = [...room.targets.values()].some((target) => target.kind === "giant");
   const hasRoyal = [...room.targets.values()].some((target) => target.kind === "royal");
@@ -942,18 +956,22 @@ function randomKind(room: GameRoom): TargetKind {
 }
 
 function spawnPowerup(room: GameRoom, now: number) {
-  const margin = 72;
   const kind = randomPowerupKind();
   const id = `u${room.nextPowerupId++}`;
+  const radius = 28;
 
   room.powerups.set(id, {
     id,
     kind,
-    x: margin + Math.random() * (WORLD_WIDTH - margin * 2),
-    y: 92 + Math.random() * (WORLD_HEIGHT - 240),
-    radius: 28,
+    x: randomInRange(POWERUP_SPAWN_AREA.left + radius, POWERUP_SPAWN_AREA.right - radius),
+    y: randomInRange(POWERUP_SPAWN_AREA.top + radius, POWERUP_SPAWN_AREA.bottom - radius),
+    radius,
     expiresAt: now + POWERUP_TTL_MS
   });
+}
+
+function randomInRange(min: number, max: number) {
+  return min + Math.random() * Math.max(0, max - min);
 }
 
 function randomPowerupKind(): PowerupKind {
