@@ -49,8 +49,8 @@ const SKYBOX_KEY = "skybox";
 const GAME_RENDER_SCALE = 2;
 const CANVAS_WIDTH = WORLD_WIDTH * GAME_RENDER_SCALE;
 const CANVAS_HEIGHT = WORLD_HEIGHT * GAME_RENDER_SCALE;
-const WEAPON_HUD_REST_X = 18;
-const WEAPON_HUD_REST_Y = -51;
+const WEAPON_HUD_REST_X = 12;
+const WEAPON_HUD_REST_Y = -38;
 
 const HUD_COLORS = {
   panel: 0x07131d,
@@ -1007,6 +1007,7 @@ class GalleryScene extends Phaser.Scene {
 
 class GameHud {
   private readonly topStatus: TopStatusHud;
+  private readonly onlineStatus: OnlineStatusHud;
   private readonly playerCard: PlayerCardHud;
   private readonly eventFeed: EventFeedHud;
   private readonly powerups: PowerupBadgesHud;
@@ -1014,6 +1015,7 @@ class GameHud {
 
   constructor(scene: Phaser.Scene) {
     this.topStatus = new TopStatusHud(scene);
+    this.onlineStatus = new OnlineStatusHud(scene);
     this.playerCard = new PlayerCardHud(scene);
     this.eventFeed = new EventFeedHud(scene);
     this.powerups = new PowerupBadgesHud(scene);
@@ -1022,11 +1024,12 @@ class GameHud {
   }
 
   layout() {
-    this.playerCard.setPosition(18, 14);
+    this.playerCard.setPosition(16, 14);
     this.topStatus.setPosition(WORLD_WIDTH / 2, 18);
-    this.eventFeed.setPosition(WORLD_WIDTH - 236, 16);
-    this.powerups.setPosition(WORLD_WIDTH - 204, WORLD_HEIGHT - 110);
-    this.weaponPanel.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT);
+    this.onlineStatus.setPosition(WORLD_WIDTH - 274, 18);
+    this.eventFeed.setPosition(WORLD_WIDTH - 236, 76);
+    this.powerups.setPosition(WORLD_WIDTH - 188, WORLD_HEIGHT - 82);
+    this.weaponPanel.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT - 10);
   }
 
   setConnectionStatus(status: string) {
@@ -1051,8 +1054,10 @@ class GameHud {
     this.powerups.setVisible(active);
     this.weaponPanel.setVisible(active);
     this.eventFeed.setVisible(active);
+    this.onlineStatus.setVisible(active);
 
     this.topStatus.render(state.round, state.room, state.now, state.playerCount);
+    this.onlineStatus.render(state.playerCount);
     this.playerCard.render(state.player);
     this.eventFeed.render(state.now);
     this.powerups.render(state.player, state.now);
@@ -1065,23 +1070,15 @@ class TopStatusHud {
   private readonly panel: Phaser.GameObjects.Graphics;
   private readonly waveText: Phaser.GameObjects.Text;
   private readonly timerText: Phaser.GameObjects.Text;
-  private readonly scoreLabel: Phaser.GameObjects.Text;
-  private readonly scoreText: Phaser.GameObjects.Text;
-  private readonly moraleLabel: Phaser.GameObjects.Text;
-  private readonly moraleText: Phaser.GameObjects.Text;
 
   constructor(scene: Phaser.Scene) {
     this.panel = scene.add.graphics();
-    this.waveText = scene.add.text(-218, 36, "WAVE 1", hudStyle(22, "#f7fbff", "900")).setOrigin(0, 0.5);
-    this.timerText = scene.add.text(18, 36, "1:30", hudStyle(30, "#ffdf91", "900")).setOrigin(0.5, 0.5);
-    this.scoreLabel = scene.add.text(156, 18, "TEAM SCORE", hudStyle(11, "#49c7f5", "900")).setOrigin(0.5, 0.5);
-    this.scoreText = scene.add.text(156, 48, "0", hudStyle(24, "#f7fbff", "900")).setOrigin(0.5, 0.5);
-    this.moraleLabel = scene.add.text(280, 18, "MORALE", hudStyle(11, "#49c7f5", "900")).setOrigin(0.5, 0.5);
-    this.moraleText = scene.add.text(280, 48, "0/0", hudStyle(24, "#f7fbff", "900")).setOrigin(0.5, 0.5);
-    for (const text of [this.waveText, this.timerText, this.scoreLabel, this.scoreText, this.moraleLabel, this.moraleText]) {
+    this.waveText = scene.add.text(-136, 28, "WAVE 1", hudStyle(18, "#f7fbff", "900")).setOrigin(0, 0.5);
+    this.timerText = scene.add.text(116, 28, "1:30", hudStyle(25, "#ffdf91", "900")).setOrigin(0.5, 0.5);
+    for (const text of [this.waveText, this.timerText]) {
       text.setResolution(2);
     }
-    this.root = scene.add.container(0, 0, [this.panel, this.waveText, this.timerText, this.scoreLabel, this.scoreText, this.moraleLabel, this.moraleText]).setDepth(88);
+    this.root = scene.add.container(0, 0, [this.panel, this.waveText, this.timerText]).setDepth(88);
   }
 
   setPosition(x: number, y: number) {
@@ -1093,11 +1090,11 @@ class TopStatusHud {
   }
 
   render(round: RoundSnapshot | null, room: RoomSummary | null, now: number, playerCount: number) {
+    void room;
+    void playerCount;
     if (!round) {
       this.waveText.setText("JOINING");
       this.timerText.setText("--:--");
-      this.scoreText.setText("0");
-      this.moraleText.setText(`${playerCount} online`);
       this.draw(1);
       return;
     }
@@ -1109,45 +1106,68 @@ class TopStatusHud {
 
     this.waveText.setText(round.mode === "pve" ? `WAVE ${round.wave}` : `ROUND ${round.number}`);
     this.timerText.setText(formatClock(remaining));
-    this.scoreLabel.setText(round.mode === "pve" ? "TEAM SCORE" : truncateHudText(room?.name ?? "ROOM", 14).toUpperCase());
-    this.scoreText.setText(round.mode === "pve" ? `${round.teamScore}` : `${playerCount} online`);
-    this.moraleLabel.setText(round.mode === "pve" ? "MORALE" : "STATE");
-    this.moraleText.setText(round.mode === "pve" ? `${morale}/${moraleMax}` : round.state.toUpperCase());
     this.draw(moraleRatio);
   }
 
   private draw(progress: number) {
-    const width = 650;
-    const height = 104;
+    const width = 330;
+    const height = 68;
     this.panel.clear();
     drawHudPanel(this.panel, -width / 2, 0, width, height, 12);
 
-    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.12);
-    this.panel.lineBetween(-58, 18, -58, 64);
-    this.panel.lineBetween(92, 18, 92, 64);
-    this.panel.lineBetween(220, 18, 220, 64);
-
-    this.panel.fillStyle(HUD_COLORS.panel, 0.78);
-    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.32);
-    this.panel.fillRoundedRect(-284, 24, 42, 42, 8);
-    this.panel.strokeRoundedRect(-284, 24, 42, 42, 8);
-    this.panel.lineStyle(4, HUD_COLORS.gold, 0.95);
-    this.panel.lineBetween(-274, 44, -252, 44);
-    this.panel.lineBetween(-266, 35, -260, 53);
-    this.panel.lineBetween(-260, 35, -266, 53);
+    this.panel.lineStyle(1, HUD_COLORS.lineSoft, 0.12);
+    this.panel.lineBetween(30, 15, 30, 42);
 
     this.panel.lineStyle(5, HUD_COLORS.gold, 0.95);
-    this.panel.strokeCircle(-46, 36, 15);
+    this.panel.strokeCircle(64, 28, 14);
     this.panel.lineStyle(2, HUD_COLORS.goldLight, 0.95);
-    this.panel.lineBetween(-46, 36, -46, 25);
-    this.panel.lineBetween(-46, 36, -35, 36);
+    this.panel.lineBetween(64, 28, 64, 18);
+    this.panel.lineBetween(64, 28, 74, 28);
 
     this.panel.fillStyle(HUD_COLORS.panel, 0.85);
     this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.24);
-    this.panel.fillRoundedRect(-248, 74, 496, 14, 7);
-    this.panel.strokeRoundedRect(-248, 74, 496, 14, 7);
+    this.panel.fillRoundedRect(-146, 50, 292, 10, 5);
+    this.panel.strokeRoundedRect(-146, 50, 292, 10, 5);
     this.panel.fillStyle(progress < 0.25 ? HUD_COLORS.red : HUD_COLORS.gold, 1);
-    this.panel.fillRoundedRect(-244, 78, 488 * progress, 6, 3);
+    this.panel.fillRoundedRect(-143, 53, 286 * progress, 4, 2);
+  }
+}
+
+class OnlineStatusHud {
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly panel: Phaser.GameObjects.Graphics;
+  private readonly countText: Phaser.GameObjects.Text;
+  private readonly stateText: Phaser.GameObjects.Text;
+
+  constructor(scene: Phaser.Scene) {
+    this.panel = scene.add.graphics();
+    this.countText = scene.add.text(74, 20, "1 online", hudStyle(17, "#f7fbff", "900")).setOrigin(0.5);
+    this.stateText = scene.add.text(168, 20, "ACTIVE", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5);
+    this.countText.setResolution(2);
+    this.stateText.setResolution(2);
+    this.root = scene.add.container(0, 0, [this.panel, this.countText, this.stateText]).setDepth(88);
+    this.draw();
+  }
+
+  setPosition(x: number, y: number) {
+    this.root.setPosition(x, y);
+  }
+
+  setVisible(visible: boolean) {
+    this.root.setVisible(visible);
+  }
+
+  render(playerCount: number) {
+    this.countText.setText(`${playerCount} online`);
+  }
+
+  private draw() {
+    this.panel.clear();
+    drawHudPanel(this.panel, 0, 0, 196, 42, 21);
+    this.panel.fillStyle(0x2f9a38, 0.92);
+    this.panel.lineStyle(1, HUD_COLORS.green, 0.56);
+    this.panel.fillRoundedRect(136, 8, 50, 26, 13);
+    this.panel.strokeRoundedRect(136, 8, 50, 26, 13);
   }
 }
 
@@ -1164,12 +1184,12 @@ class PlayerCardHud {
 
   constructor(scene: Phaser.Scene) {
     this.panel = scene.add.graphics();
-    this.badgeText = scene.add.text(70, 80, "MG", hudStyle(28, "#f7fbff", "900")).setOrigin(0.5);
-    this.nameText = scene.add.text(132, 30, "Michael", hudStyle(19, "#f7fbff", "900")).setOrigin(0, 0.5);
-    this.scoreLabel = scene.add.text(132, 68, "SCORE", hudStyle(11, "#49c7f5", "900")).setOrigin(0, 0.5);
-    this.scoreText = scene.add.text(132, 94, "0", hudStyle(26, "#ffdf91", "900")).setOrigin(0, 0.5);
-    this.streakText = scene.add.text(72, 142, "STREAK 0", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5, 0.5);
-    this.accuracyText = scene.add.text(196, 142, "ACCURACY 0%", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5, 0.5);
+    this.badgeText = scene.add.text(43, 43, "MG", hudStyle(25, "#f7fbff", "900")).setOrigin(0.5);
+    this.nameText = scene.add.text(94, 19, "Michael", hudStyle(17, "#f7fbff", "900")).setOrigin(0, 0.5);
+    this.scoreLabel = scene.add.text(94, 49, "*", hudStyle(22, "#ffc857", "900")).setOrigin(0, 0.5);
+    this.scoreText = scene.add.text(122, 49, "0", hudStyle(23, "#f7fbff", "900")).setOrigin(0, 0.5);
+    this.streakText = scene.add.text(112, 72, "STREAK 0", hudStyle(10, "#49c7f5", "900")).setOrigin(0.5, 0.5);
+    this.accuracyText = scene.add.text(196, 72, "ACCURACY 0%", hudStyle(10, "#f7fbff", "900")).setOrigin(0.5, 0.5);
     for (const text of [this.badgeText, this.nameText, this.scoreLabel, this.scoreText, this.streakText, this.accuracyText]) {
       text.setResolution(2);
     }
@@ -1200,7 +1220,7 @@ class PlayerCardHud {
     const accuracy = player.shots > 0 ? Math.round((player.hits / player.shots) * 100) : 0;
     const badge = hasActivePowerup(player, "machine_gun", Date.now()) ? "MG" : "SG";
     this.badgeText.setText(badge);
-    this.nameText.setText(truncateHudText(player.name, 15));
+    this.nameText.setText(truncateHudText(player.name, 16));
     this.scoreText.setText(`${player.score}`);
     this.streakText.setText(`STREAK ${player.streak}`);
     this.accuracyText.setText(`ACCURACY ${accuracy}%`);
@@ -1209,18 +1229,18 @@ class PlayerCardHud {
 
   private draw(badge: string) {
     this.panel.clear();
-    drawHudPanel(this.panel, 0, 0, 258, 164, 12);
+    drawHudPanel(this.panel, 0, 0, 248, 86, 10);
     this.panel.fillStyle(HUD_COLORS.panel, 0.72);
     this.panel.lineStyle(3, badge === "MG" ? HUD_COLORS.gold : HUD_COLORS.lineSoft, 0.9);
-    this.panel.fillCircle(70, 82, 48);
-    this.panel.strokeCircle(70, 82, 48);
+    this.panel.fillCircle(43, 43, 34);
+    this.panel.strokeCircle(43, 43, 34);
     this.panel.lineStyle(8, badge === "MG" ? HUD_COLORS.gold : HUD_COLORS.line, 0.12);
-    this.panel.strokeCircle(70, 82, 58);
+    this.panel.strokeCircle(43, 43, 42);
 
     this.panel.lineStyle(1, HUD_COLORS.lineSoft, 0.22);
-    this.panel.lineBetween(126, 44, 242, 44);
-    this.panel.lineBetween(126, 108, 242, 108);
-    this.panel.lineBetween(132, 126, 132, 156);
+    this.panel.lineBetween(92, 32, 236, 32);
+    this.panel.lineBetween(92, 61, 236, 61);
+    this.panel.lineBetween(154, 66, 154, 80);
   }
 }
 
@@ -1230,6 +1250,7 @@ class EventFeedHud {
   private readonly title: Phaser.GameObjects.Text;
   private readonly rows: EventFeedRow[] = [];
   private events: HudEvent[] = [];
+  private enabled = true;
 
   constructor(scene: Phaser.Scene) {
     this.panel = scene.add.graphics();
@@ -1251,7 +1272,8 @@ class EventFeedHud {
   }
 
   setVisible(visible: boolean) {
-    this.root.setVisible(visible);
+    this.enabled = visible;
+    this.root.setVisible(visible && this.events.length > 0);
   }
 
   clear() {
@@ -1286,7 +1308,8 @@ class EventFeedHud {
       row.render(event, alpha);
       visibleRows += 1;
     }
-    this.root.setAlpha(visibleRows === 0 ? 0.58 : 1);
+    this.root.setVisible(this.enabled && visibleRows > 0);
+    this.root.setAlpha(1);
     this.draw(visibleRows);
   }
 
@@ -1344,7 +1367,7 @@ class PowerupBadgesHud {
   constructor(scene: Phaser.Scene) {
     this.root = scene.add.container(0, 0).setDepth(88);
     for (let i = 0; i < 3; i += 1) {
-      const slot = new PowerupBadgeSlot(scene, i * 78, 0);
+      const slot = new PowerupBadgeSlot(scene, i * 60, 0);
       this.slots.push(slot);
       this.root.add(slot.container);
     }
@@ -1382,9 +1405,9 @@ class PowerupBadgeSlot {
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     this.graphics = scene.add.graphics();
-    this.iconText = scene.add.text(0, 0, "", hudStyle(18, "#f7fbff", "900")).setOrigin(0.5);
-    this.labelText = scene.add.text(0, 48, "", hudStyle(10, "#49c7f5", "900")).setOrigin(0.5);
-    this.timerText = scene.add.text(0, 66, "", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5);
+    this.iconText = scene.add.text(0, -1, "", hudStyle(15, "#f7fbff", "900")).setOrigin(0.5);
+    this.labelText = scene.add.text(0, 34, "", hudStyle(9, "#49c7f5", "900")).setOrigin(0.5);
+    this.timerText = scene.add.text(0, 48, "", hudStyle(10, "#f7fbff", "900")).setOrigin(0.5);
     for (const text of [this.iconText, this.labelText, this.timerText]) {
       text.setResolution(2);
     }
@@ -1402,16 +1425,16 @@ class PowerupBadgeSlot {
     this.labelText.setText(powerupLabel(kind).toUpperCase());
     this.timerText.setText(`00:${seconds.toString().padStart(2, "0")}`);
     this.graphics.clear();
-    this.graphics.lineStyle(10, color, 0.14);
-    this.graphics.strokeCircle(0, 0, 34);
+    this.graphics.lineStyle(7, color, 0.14);
+    this.graphics.strokeCircle(0, 0, 26);
     this.graphics.fillStyle(HUD_COLORS.panel, 0.9);
-    this.graphics.lineStyle(4, color, 0.96);
-    this.graphics.fillCircle(0, 0, 30);
-    this.graphics.strokeCircle(0, 0, 30);
+    this.graphics.lineStyle(3, color, 0.96);
+    this.graphics.fillCircle(0, 0, 23);
+    this.graphics.strokeCircle(0, 0, 23);
     this.graphics.fillStyle(HUD_COLORS.panel, 0.92);
     this.graphics.lineStyle(2, HUD_COLORS.lineSoft, 0.22);
-    this.graphics.fillRoundedRect(-46, 38, 92, 40, 7);
-    this.graphics.strokeRoundedRect(-46, 38, 92, 40, 7);
+    this.graphics.fillRoundedRect(-35, 28, 70, 32, 7);
+    this.graphics.strokeRoundedRect(-35, 28, 70, 32, 7);
   }
 }
 
@@ -1437,15 +1460,15 @@ class WeaponPanelHud {
     this.panel = scene.add.graphics();
     this.buffPanel = scene.add.graphics();
     this.weapon = scene.add.container(WEAPON_HUD_REST_X, WEAPON_HUD_REST_Y);
-    this.weaponShadow = scene.add.ellipse(0, 34, 284, 20, 0x000000, 0.28);
-    this.shotgun = scene.add.image(0, -2, SHOTGUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(286, 82);
-    this.machineGun = scene.add.image(0, -1, MACHINE_GUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(268, 97).setAlpha(0);
+    this.weaponShadow = scene.add.ellipse(0, 28, 214, 16, 0x000000, 0.24);
+    this.shotgun = scene.add.image(0, -2, SHOTGUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(212, 61);
+    this.machineGun = scene.add.image(0, -1, MACHINE_GUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(198, 72).setAlpha(0);
     this.weapon.add([this.weaponShadow, this.shotgun, this.machineGun]);
 
-    this.title = scene.add.text(0, -108, "SHOTGUN", hudStyle(18, "#f7fbff", "900")).setOrigin(0.5);
-    this.status = scene.add.text(-224, -42, "READY", hudStyle(13, "#ffdf91", "900")).setOrigin(0.5);
-    this.fireRateLabel = scene.add.text(202, -72, "FIRE RATE", hudStyle(10, "#49c7f5", "900")).setOrigin(0, 0.5);
-    this.damageLabel = scene.add.text(202, -38, "DAMAGE", hudStyle(10, "#49c7f5", "900")).setOrigin(0, 0.5);
+    this.title = scene.add.text(0, -78, "SHOTGUN", hudStyle(15, "#f7fbff", "900")).setOrigin(0.5);
+    this.status = scene.add.text(-158, -35, "READY", hudStyle(12, "#ffdf91", "900")).setOrigin(0.5);
+    this.fireRateLabel = scene.add.text(136, -48, "RATE", hudStyle(9, "#49c7f5", "900")).setOrigin(0, 0.5);
+    this.damageLabel = scene.add.text(136, -24, "DMG", hudStyle(9, "#49c7f5", "900")).setOrigin(0, 0.5);
     this.stats = scene.add.graphics();
     for (const text of [this.title, this.status, this.fireRateLabel, this.damageLabel]) {
       text.setResolution(2);
@@ -1453,7 +1476,7 @@ class WeaponPanelHud {
 
     this.root = scene.add.container(0, 0, [this.buffPanel, this.panel, this.title, this.weapon, this.status, this.fireRateLabel, this.damageLabel, this.stats]).setDepth(87);
     for (let i = 0; i < 6; i += 1) {
-      const slot = new BuffSlotHud(scene, -236 + i * 30, -106);
+      const slot = new BuffSlotHud(scene, -172 + i * 24, -78);
       this.buffSlots.push(slot);
       this.root.add(slot.container);
     }
@@ -1520,24 +1543,24 @@ class WeaponPanelHud {
 
   private drawShell() {
     this.panel.clear();
-    drawHudPanel(this.panel, -290, -132, 580, 124, 12);
+    drawHudPanel(this.panel, -210, -96, 420, 88, 10);
     this.panel.lineStyle(1, HUD_COLORS.lineSoft, 0.16);
-    this.panel.lineBetween(-164, -90, -164, -34);
-    this.panel.lineBetween(178, -90, 178, -34);
+    this.panel.lineBetween(-112, -66, -112, -26);
+    this.panel.lineBetween(112, -66, 112, -26);
     this.panel.fillStyle(HUD_COLORS.panel, 0.58);
     this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.18);
-    this.panel.fillRoundedRect(-266, -88, 96, 58, 7);
-    this.panel.strokeRoundedRect(-266, -88, 96, 58, 7);
+    this.panel.fillRoundedRect(-188, -62, 64, 44, 7);
+    this.panel.strokeRoundedRect(-188, -62, 64, 44, 7);
     this.panel.fillStyle(HUD_COLORS.gold, 0.95);
     for (let i = 0; i < 4; i += 1) {
-      this.panel.fillRoundedRect(-244 + i * 12, -74, 6, 24, 3);
+      this.panel.fillRoundedRect(-174 + i * 10, -50, 5, 21, 3);
     }
 
     this.buffPanel.clear();
     this.buffPanel.fillStyle(HUD_COLORS.panel, 0.86);
     this.buffPanel.lineStyle(2, HUD_COLORS.line, 0.5);
-    this.buffPanel.fillRoundedRect(-254, -122, 194, 32, 8);
-    this.buffPanel.strokeRoundedRect(-254, -122, 194, 32, 8);
+    this.buffPanel.fillRoundedRect(-184, -91, 156, 26, 8);
+    this.buffPanel.strokeRoundedRect(-184, -91, 156, 26, 8);
   }
 
   private drawStats(machineGunActive: boolean) {
@@ -1546,10 +1569,10 @@ class WeaponPanelHud {
     this.stats.clear();
     this.stats.fillStyle(HUD_COLORS.panel, 0.42);
     this.stats.lineStyle(1, HUD_COLORS.lineSoft, 0.18);
-    this.stats.fillRoundedRect(190, -94, 78, 64, 7);
-    this.stats.strokeRoundedRect(190, -94, 78, 64, 7);
-    drawMeterBlocks(this.stats, 202, -60, 8, fireRate, HUD_COLORS.cyan);
-    drawMeterBlocks(this.stats, 202, -28, 8, damage, HUD_COLORS.gold);
+    this.stats.fillRoundedRect(126, -66, 66, 48, 7);
+    this.stats.strokeRoundedRect(126, -66, 66, 48, 7);
+    drawMeterBlocks(this.stats, 154, -50, 6, Math.min(6, fireRate), HUD_COLORS.cyan);
+    drawMeterBlocks(this.stats, 154, -26, 6, Math.min(6, damage), HUD_COLORS.gold);
   }
 }
 
@@ -1571,8 +1594,8 @@ class BuffSlotHud {
     const color = kind ? powerupColor(kind) : HUD_COLORS.lineSoft;
     this.graphics.fillStyle(active ? HUD_COLORS.panelAlt : HUD_COLORS.panel, active ? 0.9 : 0.72);
     this.graphics.lineStyle(active ? 3 : 2, color, active ? 0.95 : 0.28);
-    this.graphics.fillRoundedRect(-13, -13, 26, 26, 6);
-    this.graphics.strokeRoundedRect(-13, -13, 26, 26, 6);
+    this.graphics.fillRoundedRect(-10, -10, 20, 20, 5);
+    this.graphics.strokeRoundedRect(-10, -10, 20, 20, 5);
     this.label.setText(kind ? powerupIcon(kind).toUpperCase() : "");
   }
 }
