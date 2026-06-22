@@ -542,8 +542,8 @@ class GalleryScene extends Phaser.Scene {
         });
       }
 
-      if (shot.playerId === this.playerId && shot.hit) {
-        this.cameras.main.shake(shot.powerupKind === "nuke" ? 360 : shot.points >= 40 ? 170 : 100, shot.powerupKind === "nuke" ? 0.014 : shot.points >= 40 ? 0.0065 : 0.0038);
+      if (shot.playerId === this.playerId && shot.hit && !shot.powerupKind) {
+        this.spawnLocalHitConfirm(shot.x, shot.y, shot.points);
       }
     }
   }
@@ -566,12 +566,49 @@ class GalleryScene extends Phaser.Scene {
 
     this.tweens.add({
       targets: ring,
-      radius: shot.hit ? 58 : 22,
-      scaleX: shot.hit ? 1.35 : 1,
+      radius: shot.hit ? (shot.points >= 40 ? 78 : 62) : 22,
+      scaleX: shot.hit ? (shot.points >= 40 ? 1.48 : 1.35) : 1,
       alpha: 0,
       duration: shot.hit ? 480 : 300,
       ease: "quad.out",
       onComplete: () => ring.destroy()
+    });
+  }
+
+  private spawnLocalHitConfirm(x: number, y: number, points: number) {
+    const big = points >= 40;
+    const pulse = this.add.graphics().setPosition(x, y).setDepth(91);
+    pulse.lineStyle(big ? 5 : 4, 0xfff5c2, 0.95);
+    pulse.strokeCircle(0, 0, big ? 24 : 18);
+    pulse.lineStyle(2, 0x07131d, 0.28);
+    pulse.strokeCircle(0, 0, big ? 30 : 23);
+
+    const score = this.add
+      .text(x, y - (big ? 44 : 34), `+${points}`, hudStyle(big ? 30 : 23, big ? "#fff5c2" : "#ffdf91", "900"))
+      .setOrigin(0.5)
+      .setDepth(92)
+      .setResolution(2)
+      .setStroke("#07131d", big ? 7 : 6)
+      .setShadow(0, 3, "#07131d", 4, true, true);
+    score.setScale(0.7);
+
+    this.tweens.add({
+      targets: pulse,
+      scale: big ? 1.95 : 1.65,
+      alpha: 0,
+      duration: big ? 230 : 170,
+      ease: "quad.out",
+      onComplete: () => pulse.destroy()
+    });
+
+    this.tweens.add({
+      targets: score,
+      y: score.y - (big ? 54 : 40),
+      scale: { from: 0.7, to: big ? 1.18 : 1 },
+      alpha: 0,
+      duration: big ? 650 : 520,
+      ease: "back.out",
+      onComplete: () => score.destroy()
     });
   }
 
