@@ -7,6 +7,7 @@ import speedyChickenUrl from "./assets/chickens/speedy.png";
 import grenadePowerupUrl from "./assets/weapons/grenade.png";
 import machineGunWeaponUrl from "./assets/weapons/machine-gun.png";
 import shotgunWeaponUrl from "./assets/weapons/shotgun.png";
+import skyboxUrl from "./assets/skybox-2.png";
 import {
   POWERUP_DURATION_MS,
   POWERUP_TTL_MS,
@@ -36,6 +37,7 @@ const SPEEDY_CHICKEN_KEY = "chicken-speedy";
 const BONUS_CHICKEN_KEY = "chicken-bonus";
 const BOSS_CHICKEN_KEY = "chicken-boss";
 const GIANT_CHICKEN_KEY = "chicken-giant";
+const SKYBOX_KEY = "skybox";
 const GAME_RENDER_SCALE = 2;
 const CANVAS_WIDTH = WORLD_WIDTH * GAME_RENDER_SCALE;
 const CANVAS_HEIGHT = WORLD_HEIGHT * GAME_RENDER_SCALE;
@@ -231,7 +233,6 @@ class GalleryScene extends Phaser.Scene {
   private readonly upgradeCardDescriptions: Phaser.GameObjects.Text[] = [];
   private readonly upgradeCardVotes: Phaser.GameObjects.Text[] = [];
   private crosshair!: Phaser.GameObjects.Graphics;
-  private background!: Phaser.GameObjects.Graphics;
   private sfx!: SoundFx;
   private tauntKey!: Phaser.Input.Keyboard.Key;
   private round: RoundSnapshot | null = null;
@@ -251,6 +252,7 @@ class GalleryScene extends Phaser.Scene {
     this.load.image(SHOTGUN_WEAPON_KEY, shotgunWeaponUrl);
     this.load.image(MACHINE_GUN_WEAPON_KEY, machineGunWeaponUrl);
     this.load.image(GRENADE_POWERUP_KEY, grenadePowerupUrl);
+    this.load.image(SKYBOX_KEY, skyboxUrl);
   }
 
   create() {
@@ -258,8 +260,10 @@ class GalleryScene extends Phaser.Scene {
     this.cameras.main.setZoom(GAME_RENDER_SCALE);
     this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
 
-    this.background = this.add.graphics();
-    this.drawBackground();
+    this.add
+      .image(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, SKYBOX_KEY)
+      .setDisplaySize(WORLD_HEIGHT * (2172 / 724), WORLD_HEIGHT)
+      .setDepth(-40);
     this.sfx = new SoundFx();
     createChickenAnimations(this);
 
@@ -978,63 +982,6 @@ class GalleryScene extends Phaser.Scene {
     this.crosshair.lineBetween(point.x, point.y + 8, point.x, point.y + 23);
     this.crosshair.fillStyle(0xffd45c, 0.98);
     this.crosshair.fillCircle(point.x, point.y, 3.2);
-  }
-
-  private drawBackground() {
-    this.background.clear();
-    const skyBands = [0x76b7dd, 0x83c3e4, 0x98d2e8, 0xb9dfec, 0xdbeee9];
-    for (let i = 0; i < skyBands.length; i += 1) {
-      this.background.fillStyle(skyBands[i], 1);
-      this.background.fillRect(0, (WORLD_HEIGHT * 0.7 * i) / skyBands.length, WORLD_WIDTH, WORLD_HEIGHT * 0.7 / skyBands.length + 1);
-    }
-
-    this.background.fillStyle(0xffdf91, 1);
-    this.background.fillCircle(1088, 92, 48);
-    this.background.fillStyle(0xfff5c2, 0.6);
-    this.background.fillCircle(1088, 92, 82);
-
-    this.drawCloud(168, 98, 1.06);
-    this.drawCloud(760, 74, 1.22);
-    this.drawCloud(1030, 136, 0.78);
-
-    this.background.fillStyle(0x5b8fa4, 0.55);
-    this.background.fillTriangle(-80, 444, 150, 220, 390, 444);
-    this.background.fillTriangle(230, 444, 510, 176, 820, 444);
-    this.background.fillTriangle(690, 444, 960, 238, 1260, 444);
-    this.background.fillStyle(0x3e7181, 0.46);
-    this.background.fillTriangle(18, 458, 238, 286, 492, 458);
-    this.background.fillTriangle(592, 458, 838, 246, 1120, 458);
-
-    this.background.fillStyle(0x6c934f, 1);
-    this.background.fillRect(0, WORLD_HEIGHT - 154, WORLD_WIDTH, 154);
-    this.background.fillStyle(0x557b40, 1);
-    for (let x = -24; x < WORLD_WIDTH + 24; x += 30) {
-      const height = 42 + ((x * 17) % 29);
-      this.background.fillTriangle(x, WORLD_HEIGHT - 154, x + 17, WORLD_HEIGHT - 154 - height, x + 36, WORLD_HEIGHT - 154);
-    }
-
-    this.background.fillStyle(0x835735, 1);
-    for (let x = 16; x < WORLD_WIDTH; x += 128) {
-      this.background.fillRoundedRect(x, WORLD_HEIGHT - 134, 18, 94, 6);
-    }
-    this.background.fillStyle(0xb97846, 1);
-    this.background.fillRoundedRect(0, WORLD_HEIGHT - 126, WORLD_WIDTH, 16, 8);
-    this.background.fillRoundedRect(0, WORLD_HEIGHT - 88, WORLD_WIDTH, 14, 7);
-
-    this.background.fillStyle(0x8c6239, 1);
-    this.background.fillRect(0, WORLD_HEIGHT - 58, WORLD_WIDTH, 58);
-    this.background.fillStyle(0x6f4a2d, 0.55);
-    for (let x = 0; x < WORLD_WIDTH; x += 46) {
-      this.background.fillEllipse(x + 18, WORLD_HEIGHT - 24, 54, 8);
-    }
-  }
-
-  private drawCloud(x: number, y: number, scale: number) {
-    this.background.fillStyle(0xf4fbff, 0.72);
-    this.background.fillCircle(x, y + 12 * scale, 42 * scale);
-    this.background.fillCircle(x + 48 * scale, y, 58 * scale);
-    this.background.fillCircle(x + 106 * scale, y + 16 * scale, 38 * scale);
-    this.background.fillCircle(x + 72 * scale, y + 26 * scale, 52 * scale);
   }
 
   private resizeGame(size: Phaser.Structs.Size) {

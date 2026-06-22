@@ -31,31 +31,25 @@ canvas {
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(180deg, rgba(126, 220, 255, 0.28) 0 18%, rgba(7, 19, 29, 0) 18%),
-    linear-gradient(135deg, rgba(16, 34, 51, 0.22) 0 28%, transparent 28%),
-    linear-gradient(225deg, rgba(16, 34, 51, 0.2) 0 25%, transparent 25%),
-    linear-gradient(180deg, #76b7dd 0 54%, #6c934f 54% 82%, #8c6239 82%);
+    linear-gradient(180deg, rgba(7, 19, 29, 0.05), rgba(7, 19, 29, 0.24)),
+    url("./assets/skybox-2.png") center / cover no-repeat;
 }
 
 .start-screen::before {
   position: absolute;
-  inset: auto 0 15%;
-  height: 74px;
+  inset: 0;
   content: "";
   background:
-    repeating-linear-gradient(90deg, transparent 0 48px, #835735 48px 62px, transparent 62px 128px),
-    linear-gradient(#b97846 0 15px, transparent 15px 38px, #b97846 38px 52px, transparent 52px);
-  opacity: 0.9;
+    radial-gradient(circle at 50% 45%, rgba(73, 199, 245, 0.12), transparent 36%),
+    linear-gradient(180deg, rgba(7, 19, 29, 0) 0 48%, rgba(7, 19, 29, 0.22) 100%);
+  pointer-events: none;
 }
 
 .start-screen::after {
   position: absolute;
   inset: 0;
   content: "";
-  background:
-    linear-gradient(180deg, rgba(7, 19, 29, 0) 0 58%, rgba(7, 19, 29, 0.22) 100%),
-    linear-gradient(110deg, transparent 0 9%, rgba(16, 34, 51, 0.2) 9% 25%, transparent 25%),
-    linear-gradient(70deg, transparent 0 58%, rgba(16, 34, 51, 0.22) 58% 74%, transparent 74%);
+  background: rgba(7, 19, 29, 0.08);
   pointer-events: none;
 }
 
