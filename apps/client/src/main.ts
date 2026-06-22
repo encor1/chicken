@@ -1,4 +1,9 @@
 import Phaser from "phaser";
+import bossChickenUrl from "./assets/chickens/boss.png";
+import basicChickenUrl from "./assets/chickens/basic.png";
+import bonusChickenUrl from "./assets/chickens/bonus.png";
+import giantChickenUrl from "./assets/chickens/giant.png";
+import speedyChickenUrl from "./assets/chickens/speedy.png";
 import grenadePowerupUrl from "./assets/weapons/grenade.png";
 import machineGunWeaponUrl from "./assets/weapons/machine-gun.png";
 import shotgunWeaponUrl from "./assets/weapons/shotgun.png";
@@ -26,6 +31,11 @@ import "./styles.css";
 const SHOTGUN_WEAPON_KEY = "weapon-shotgun";
 const MACHINE_GUN_WEAPON_KEY = "weapon-machine-gun";
 const GRENADE_POWERUP_KEY = "powerup-grenade";
+const BASIC_CHICKEN_KEY = "chicken-basic";
+const SPEEDY_CHICKEN_KEY = "chicken-speedy";
+const BONUS_CHICKEN_KEY = "chicken-bonus";
+const BOSS_CHICKEN_KEY = "chicken-boss";
+const GIANT_CHICKEN_KEY = "chicken-giant";
 const WEAPON_HUD_REST_X = 18;
 const WEAPON_HUD_REST_Y = -51;
 
@@ -230,6 +240,11 @@ class GalleryScene extends Phaser.Scene {
   private lastMachineGunSendAt = 0;
 
   preload() {
+    this.load.spritesheet(BASIC_CHICKEN_KEY, basicChickenUrl, { frameWidth: 274, frameHeight: 247 });
+    this.load.spritesheet(SPEEDY_CHICKEN_KEY, speedyChickenUrl, { frameWidth: 338, frameHeight: 213 });
+    this.load.spritesheet(BONUS_CHICKEN_KEY, bonusChickenUrl, { frameWidth: 364, frameHeight: 246 });
+    this.load.spritesheet(BOSS_CHICKEN_KEY, bossChickenUrl, { frameWidth: 364, frameHeight: 320 });
+    this.load.spritesheet(GIANT_CHICKEN_KEY, giantChickenUrl, { frameWidth: 435, frameHeight: 439 });
     this.load.image(SHOTGUN_WEAPON_KEY, shotgunWeaponUrl);
     this.load.image(MACHINE_GUN_WEAPON_KEY, machineGunWeaponUrl);
     this.load.image(GRENADE_POWERUP_KEY, grenadePowerupUrl);
@@ -243,6 +258,7 @@ class GalleryScene extends Phaser.Scene {
     this.background = this.add.graphics();
     this.drawBackground();
     this.sfx = new SoundFx();
+    createChickenAnimations(this);
 
     this.hud = new GameHud(this);
     this.hud.setConnectionStatus("Connecting...");
@@ -1801,41 +1817,26 @@ class SoundFx {
 class TargetView {
   private readonly group: Phaser.GameObjects.Container;
   private readonly shadow: Phaser.GameObjects.Ellipse;
-  private readonly tail: Phaser.GameObjects.Triangle;
-  private readonly body: Phaser.GameObjects.Ellipse;
-  private readonly wingA: Phaser.GameObjects.Ellipse;
-  private readonly wingB: Phaser.GameObjects.Ellipse;
-  private readonly head: Phaser.GameObjects.Ellipse;
-  private readonly eye: Phaser.GameObjects.Arc;
-  private readonly beak: Phaser.GameObjects.Triangle;
+  private readonly sprite: Phaser.GameObjects.Sprite;
   private readonly badge: Phaser.GameObjects.Ellipse;
   private readonly label: Phaser.GameObjects.Text;
   private target: TargetSnapshot;
 
   constructor(scene: Phaser.Scene, snapshot: TargetSnapshot) {
     this.target = snapshot;
-    const palette = paletteFor(snapshot.kind);
-    this.shadow = scene.add.ellipse(0, snapshot.radius * 0.46, snapshot.radius * 1.8, snapshot.radius * 0.34, 0x18232c, 0.18);
-    this.tail = scene.add.triangle(-snapshot.radius * 0.78, -snapshot.radius * 0.04, 0, 0, -22, -14, -18, 15, palette.wing, 0.95);
-    this.body = scene.add.ellipse(0, 0, snapshot.radius * 1.7, snapshot.radius * 1.1, palette.body);
-    this.wingA = scene.add.ellipse(-8, -7, snapshot.radius * 1.05, snapshot.radius * 0.48, palette.wing);
-    this.wingB = scene.add.ellipse(8, -7, snapshot.radius * 1.05, snapshot.radius * 0.48, palette.wing);
-    this.head = scene.add.ellipse(snapshot.radius * 0.68, -snapshot.radius * 0.22, snapshot.radius * 0.72, snapshot.radius * 0.62, palette.body);
-    const highlight = scene.add.ellipse(snapshot.radius * 0.18, -snapshot.radius * 0.18, snapshot.radius * 0.72, snapshot.radius * 0.22, 0xffffff, 0.28);
-    this.eye = scene.add.circle(snapshot.radius * 0.82, -snapshot.radius * 0.32, Math.max(2.8, snapshot.radius * 0.08), 0x18232c, 1);
-    this.beak = scene.add.triangle(snapshot.radius * 1.08, -snapshot.radius * 0.2, 0, 0, 14, 6, 0, 12, 0xf0b429);
-    this.tail.setStrokeStyle(2, 0x18232c, 0.8);
-    this.body.setStrokeStyle(3, 0x7f5539, 0.86);
-    this.wingA.setStrokeStyle(2, 0x18232c, 0.48);
-    this.wingB.setStrokeStyle(2, 0x18232c, 0.48);
-    this.head.setStrokeStyle(2, 0x7f5539, 0.82);
-    this.beak.setStrokeStyle(2, 0x9a6a13, 0.9);
-    const signY = snapshot.radius + Math.max(18, snapshot.radius * 0.36);
+    const spriteConfig = chickenSpriteFor(snapshot.kind);
+    const displayWidth = chickenDisplayWidth(snapshot);
+    this.shadow = scene.add.ellipse(0, snapshot.radius * 0.62, displayWidth * 0.64, snapshot.radius * 0.34, 0x18232c, 0.18);
+    this.sprite = scene.add.sprite(0, 0, spriteConfig.textureKey).setOrigin(0.5);
+    this.sprite.setDisplaySize(displayWidth, displayWidth * spriteConfig.aspectRatio);
+    this.sprite.play(spriteConfig.animationKey);
+    this.sprite.anims.setProgress((snapshot.flap % (Math.PI * 2)) / (Math.PI * 2));
+    const signY = Math.max(snapshot.radius + 18, this.sprite.displayHeight * 0.46 + 16);
     this.badge = scene.add.ellipse(0, signY, Math.max(64, snapshot.radius * 1.42), Math.max(28, snapshot.radius * 0.46), HUD_COLORS.panel, 0.9);
     this.badge.setStrokeStyle(3, HUD_COLORS.gold, 0.95);
     this.label = scene.add.text(0, signY, `${snapshot.points} ♥`, hudStyle(snapshot.kind === "royal" ? 17 : snapshot.kind === "giant" ? 18 : 15, "#f7fbff", "900")).setOrigin(0.5);
     this.label.setResolution(2);
-    this.group = scene.add.container(snapshot.x, snapshot.y, [this.shadow, this.tail, this.wingA, this.wingB, this.body, highlight, this.head, this.eye, this.beak, this.badge, this.label]).setDepth(snapshot.kind === "giant" || snapshot.kind === "royal" ? 45 : 20);
+    this.group = scene.add.container(snapshot.x, snapshot.y, [this.shadow, this.sprite, this.badge, this.label]).setDepth(snapshot.kind === "giant" || snapshot.kind === "royal" ? 45 : 20);
     this.group.scaleX = snapshot.facing;
     this.label.scaleX = snapshot.facing;
 
@@ -1859,9 +1860,6 @@ class TargetView {
     this.group.scaleX = this.target.facing;
     this.label.scaleX = this.target.facing;
     this.badge.scaleX = this.target.facing;
-    const flap = Math.sin(this.target.flap) * 0.45;
-    this.wingA.rotation = -0.25 + flap;
-    this.wingB.rotation = 0.25 - flap;
   }
 
   destroy() {
@@ -1869,20 +1867,58 @@ class TargetView {
   }
 }
 
-function paletteFor(kind: TargetSnapshot["kind"]) {
-  if (kind === "royal") {
-    return { body: 0xffdf91, wing: 0x7b2cbf };
+function createChickenAnimations(scene: Phaser.Scene) {
+  const animations = [
+    { textureKey: BASIC_CHICKEN_KEY, animationKey: "chicken-basic-fly", frameRate: 9 },
+    { textureKey: SPEEDY_CHICKEN_KEY, animationKey: "chicken-speedy-fly", frameRate: 13 },
+    { textureKey: BONUS_CHICKEN_KEY, animationKey: "chicken-bonus-fly", frameRate: 14 },
+    { textureKey: BOSS_CHICKEN_KEY, animationKey: "chicken-boss-fly", frameRate: 8 },
+    { textureKey: GIANT_CHICKEN_KEY, animationKey: "chicken-giant-walk", frameRate: 8 }
+  ];
+
+  for (const animation of animations) {
+    if (scene.anims.exists(animation.animationKey)) {
+      continue;
+    }
+    scene.anims.create({
+      key: animation.animationKey,
+      frames: scene.anims.generateFrameNumbers(animation.textureKey, { start: 0, end: 3 }),
+      frameRate: animation.frameRate,
+      repeat: -1
+    });
   }
-  if (kind === "giant") {
-    return { body: 0xffdf91, wing: 0xc04f3f };
+}
+
+function chickenSpriteFor(kind: TargetSnapshot["kind"]) {
+  if (kind === "runner") {
+    return { textureKey: SPEEDY_CHICKEN_KEY, animationKey: "chicken-speedy-fly", aspectRatio: 213 / 338 };
   }
   if (kind === "bonus") {
-    return { body: 0xf25f5c, wing: 0xffc857 };
+    return { textureKey: BONUS_CHICKEN_KEY, animationKey: "chicken-bonus-fly", aspectRatio: 246 / 364 };
   }
-  if (kind === "runner") {
-    return { body: 0xf7f1dc, wing: 0xb7cad6 };
+  if (kind === "giant") {
+    return { textureKey: GIANT_CHICKEN_KEY, animationKey: "chicken-giant-walk", aspectRatio: 439 / 435 };
   }
-  return { body: 0xebe3cf, wing: 0x7f5539 };
+  if (kind === "royal") {
+    return { textureKey: BOSS_CHICKEN_KEY, animationKey: "chicken-boss-fly", aspectRatio: 320 / 364 };
+  }
+  return { textureKey: BASIC_CHICKEN_KEY, animationKey: "chicken-basic-fly", aspectRatio: 247 / 274 };
+}
+
+function chickenDisplayWidth(snapshot: TargetSnapshot) {
+  if (snapshot.kind === "giant") {
+    return snapshot.radius * 2.9;
+  }
+  if (snapshot.kind === "royal") {
+    return snapshot.radius * 3.35;
+  }
+  if (snapshot.kind === "runner") {
+    return snapshot.radius * 4.3;
+  }
+  if (snapshot.kind === "bonus") {
+    return snapshot.radius * 3.6;
+  }
+  return snapshot.radius * 3.3;
 }
 
 function drawHudPanel(graphics: Phaser.GameObjects.Graphics, x: number, y: number, width: number, height: number, radius: number) {
