@@ -21,8 +21,8 @@ import powerupOrangeUrl from "./assets/hud/powerup-orange.png";
 import powerupRedUrl from "./assets/hud/powerup-red.png";
 import statsBoxUrl from "./assets/hud/stats-box.png";
 import grenadePowerupUrl from "./assets/weapons/grenade.png";
-import machineGunWeaponUrl from "./assets/weapons/machine-gun.png";
-import shotgunWeaponUrl from "./assets/weapons/shotgun.png";
+import machineGunWeaponUrl from "./assets/weapons/machine-gun-angles.png";
+import shotgunWeaponUrl from "./assets/weapons/shotgun-angles.png";
 import skyboxUrl from "./assets/skybox-2.png";
 import {
   POWERUP_DURATION_MS,
@@ -73,8 +73,10 @@ const HUD_STATS_BOX_KEY = "hud-stats-box";
 const GAME_RENDER_SCALE = 1;
 const CANVAS_WIDTH = WORLD_WIDTH * GAME_RENDER_SCALE;
 const CANVAS_HEIGHT = WORLD_HEIGHT * GAME_RENDER_SCALE;
-const WEAPON_HUD_REST_X = 12;
-const WEAPON_HUD_REST_Y = -34;
+const WEAPON_HUD_REST_X = 0;
+const WEAPON_HUD_REST_Y = -8;
+const SHOTGUN_WEAPON_FRAME = { width: 320, height: 560 };
+const MACHINE_GUN_WEAPON_FRAME = { width: 320, height: 520 };
 
 const HUD_COLORS = {
   panel: 0x2f170a,
@@ -91,6 +93,7 @@ const HUD_COLORS = {
 
 type HudEventKind = PowerupKind | "score" | "taunt";
 type TargetBadgeVariant = "normal" | "rare" | "epic" | "bonus";
+type WeaponKind = "shotgun" | "machine_gun";
 
 type HudEvent = {
   kind: HudEventKind;
@@ -105,6 +108,7 @@ type GameHudState = {
   room: RoomSummary | null;
   now: number;
   playerCount: number;
+  aimX: number;
 };
 
 const params = new URLSearchParams(window.location.search);
@@ -288,8 +292,11 @@ class GalleryScene extends Phaser.Scene {
     this.load.image(TARGET_BADGE_RARE_KEY, rareBadgeUrl);
     this.load.image(TARGET_BADGE_EPIC_KEY, epicBadgeUrl);
     this.load.image(TARGET_BADGE_BONUS_KEY, bonusBadgeUrl);
-    this.load.image(SHOTGUN_WEAPON_KEY, shotgunWeaponUrl);
-    this.load.image(MACHINE_GUN_WEAPON_KEY, machineGunWeaponUrl);
+    this.load.spritesheet(SHOTGUN_WEAPON_KEY, shotgunWeaponUrl, { frameWidth: SHOTGUN_WEAPON_FRAME.width, frameHeight: SHOTGUN_WEAPON_FRAME.height });
+    this.load.spritesheet(MACHINE_GUN_WEAPON_KEY, machineGunWeaponUrl, {
+      frameWidth: MACHINE_GUN_WEAPON_FRAME.width,
+      frameHeight: MACHINE_GUN_WEAPON_FRAME.height
+    });
     this.load.image(GRENADE_POWERUP_KEY, grenadePowerupUrl);
     this.load.image(SKYBOX_KEY, skyboxUrl);
     this.load.image(HUD_ACTIVE_SIGN_KEY, activeSignUrl);
@@ -373,7 +380,8 @@ class GalleryScene extends Phaser.Scene {
       round: this.round,
       room: this.room,
       now: this.serverNow(),
-      playerCount: this.players.length
+      playerCount: this.players.length,
+      aimX: Number.isFinite(this.lastCrosshairX) ? this.lastCrosshairX : WORLD_WIDTH / 2
     });
     if (local) {
       this.fireMachineGunIfHeld(local);
@@ -1104,7 +1112,7 @@ class GameHud {
     this.playerCard.render(state.player);
     this.eventFeed.render(state.now);
     this.powerups.render(state.player, state.now);
-    this.weaponPanel.render(state.player, state.now);
+    this.weaponPanel.render(state.player, state.now, state.aimX);
   }
 }
 
@@ -1624,8 +1632,8 @@ class WeaponPanelHud {
   private readonly statsBox: Phaser.GameObjects.Image;
   private readonly weapon: Phaser.GameObjects.Container;
   private readonly weaponShadow: Phaser.GameObjects.Ellipse;
-  private readonly shotgun: Phaser.GameObjects.Image;
-  private readonly machineGun: Phaser.GameObjects.Image;
+  private readonly shotgun: Phaser.GameObjects.Sprite;
+  private readonly machineGun: Phaser.GameObjects.Sprite;
   private readonly title: Phaser.GameObjects.Text;
   private readonly status: Phaser.GameObjects.Text;
   private readonly fireRateLabel: Phaser.GameObjects.Text;
@@ -1633,8 +1641,9 @@ class WeaponPanelHud {
   private readonly stats: Phaser.GameObjects.Graphics;
   private readonly buffPanel: Phaser.GameObjects.Graphics;
   private readonly buffSlots: BuffSlotHud[] = [];
-  private activeWeapon: "shotgun" | "machine_gun" = "shotgun";
-  private lastRenderedWeapon: "shotgun" | "machine_gun" | "" = "";
+  private activeWeapon: WeaponKind = "shotgun";
+  private lastRenderedWeapon: WeaponKind | "" = "";
+  private lastRenderedFrame = -1;
   private lastVisible: boolean | null = null;
 
   constructor(scene: Phaser.Scene) {
@@ -1644,9 +1653,9 @@ class WeaponPanelHud {
     this.statsBox = scene.add.image(199, -49, HUD_STATS_BOX_KEY).setDisplaySize(99, 72);
     this.buffPanel = scene.add.graphics();
     this.weapon = scene.add.container(WEAPON_HUD_REST_X, WEAPON_HUD_REST_Y);
-    this.weaponShadow = scene.add.ellipse(0, 24, 204, 15, 0x000000, 0.24);
-    this.shotgun = scene.add.image(0, -4, SHOTGUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(200, 57);
-    this.machineGun = scene.add.image(0, -3, MACHINE_GUN_WEAPON_KEY).setOrigin(0.5, 0.52).setDisplaySize(188, 68).setAlpha(0);
+    this.weaponShadow = scene.add.ellipse(0, -3, 136, 14, 0x000000, 0.24);
+    this.shotgun = scene.add.sprite(0, 0, SHOTGUN_WEAPON_KEY, 2).setOrigin(0.5, 1).setDisplaySize(166, 290);
+    this.machineGun = scene.add.sprite(0, 0, MACHINE_GUN_WEAPON_KEY, 2).setOrigin(0.5, 1).setDisplaySize(176, 286).setAlpha(0);
     this.weapon.add([this.weaponShadow, this.shotgun, this.machineGun]);
 
     this.title = scene.add.text(0, -96, "SHOTGUN", hudStyle(14, "#fffaf0", "900")).setOrigin(0.5);
@@ -1659,7 +1668,7 @@ class WeaponPanelHud {
     }
 
     this.root = scene.add
-      .container(0, 0, [this.buffPanel, this.panel, this.ammoBox, this.statsBox, this.title, this.weapon, this.status, this.fireRateLabel, this.damageLabel, this.stats])
+      .container(0, 0, [this.weapon, this.buffPanel, this.panel, this.ammoBox, this.statsBox, this.title, this.status, this.fireRateLabel, this.damageLabel, this.stats])
       .setDepth(87);
     for (let i = 0; i < 6; i += 1) {
       const slot = new BuffSlotHud(scene, -104 + i * 22, -79);
@@ -1681,11 +1690,11 @@ class WeaponPanelHud {
     this.root.setVisible(visible);
   }
 
-  render(player: PlayerSnapshot | undefined, now: number) {
+  render(player: PlayerSnapshot | undefined, now: number, aimX: number) {
     const activePowerups = getActivePowerups(player, now);
     const machineGunActive = Boolean(player && hasActivePowerup(player, "machine_gun", now));
     const weapon = machineGunActive ? "machine_gun" : "shotgun";
-    this.renderWeapon(weapon);
+    this.renderWeapon(weapon, weaponFrameForAim(aimX));
     if (weapon !== this.lastRenderedWeapon) {
       this.lastRenderedWeapon = weapon;
       this.title.setText(machineGunActive ? "MACHINE GUN" : "SHOTGUN");
@@ -1714,7 +1723,13 @@ class WeaponPanelHud {
     });
   }
 
-  private renderWeapon(activeWeapon: "shotgun" | "machine_gun") {
+  private renderWeapon(activeWeapon: WeaponKind, frame: number) {
+    if (frame !== this.lastRenderedFrame) {
+      this.lastRenderedFrame = frame;
+      this.shotgun.setFrame(frame);
+      this.machineGun.setFrame(frame);
+    }
+
     if (activeWeapon === this.activeWeapon) {
       return;
     }
@@ -2561,6 +2576,24 @@ function powerupImageSize(_kind: PowerupKind): { width: number; height: number }
 
 function hasActivePowerup(player: PlayerSnapshot, kind: PowerupKind, now: number): boolean {
   return player.activePowerups.some((powerup) => powerup.kind === kind && powerup.expiresAt > now);
+}
+
+function weaponFrameForAim(aimX: number): number {
+  const weaponCenterX = WORLD_WIDTH / 2 + WEAPON_HUD_REST_X;
+  const normalized = Phaser.Math.Clamp((aimX - weaponCenterX) / (WORLD_WIDTH / 2), -1, 1);
+  if (normalized < -0.58) {
+    return 0;
+  }
+  if (normalized < -0.12) {
+    return 3;
+  }
+  if (normalized <= 0.12) {
+    return 2;
+  }
+  if (normalized <= 0.58) {
+    return 1;
+  }
+  return 4;
 }
 
 function upgradeCardRect(index: number, total: number): { x: number; y: number; width: number; height: number } {
