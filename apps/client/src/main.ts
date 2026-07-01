@@ -4,24 +4,16 @@ import basicChickenUrl from "./assets/chickens/basic.png";
 import bonusChickenUrl from "./assets/chickens/bonus.png";
 import giantChickenUrl from "./assets/chickens/giant.png";
 import speedyChickenUrl from "./assets/chickens/speedy.png";
-import activeSignUrl from "./assets/hud/active-sign.png";
-import ammoBoxUrl from "./assets/hud/ammo-box.png";
-import eventHeaderUrl from "./assets/hud/event-header.png";
-import eventListPanelUrl from "./assets/hud/event-list-panel.png";
-import eventRowStackUrl from "./assets/hud/event-row-stack.png";
-import iconClockUrl from "./assets/hud/icon-clock.png";
-import iconPlayersUrl from "./assets/hud/icon-players.png";
-import iconTargetUrl from "./assets/hud/icon-target.png";
 import powerupGoldUrl from "./assets/hud/powerup-gold.png";
 import powerupOrangeUrl from "./assets/hud/powerup-orange.png";
 import powerupRedUrl from "./assets/hud/powerup-red.png";
-import statsBoxUrl from "./assets/hud/stats-box.png";
 import grenadePowerupUrl from "./assets/weapons/grenade.png";
 import machineGunWeaponUrl from "./assets/weapons/machine-gun-angles.png";
 import shotgunWeaponUrl from "./assets/weapons/shotgun-angles.png";
 import skyboxUrl from "./assets/skybox-2.png";
 import {
-  POWERUP_DURATION_MS,
+  MACHINE_GUN_COOLDOWN_MS,
+  MACHINE_GUN_STREAK_THRESHOLD,
   POWERUP_TTL_MS,
   ROUND_DURATION_MS,
   WORLD_HEIGHT,
@@ -50,31 +42,23 @@ const BONUS_CHICKEN_KEY = "chicken-bonus";
 const BOSS_CHICKEN_KEY = "chicken-boss";
 const GIANT_CHICKEN_KEY = "chicken-giant";
 const SKYBOX_KEY = "skybox";
-const HUD_ACTIVE_SIGN_KEY = "hud-active-sign";
-const HUD_AMMO_BOX_KEY = "hud-ammo-box";
-const HUD_EVENT_HEADER_KEY = "hud-event-header";
-const HUD_EVENT_LIST_PANEL_KEY = "hud-event-list-panel";
-const HUD_EVENT_ROW_STACK_KEY = "hud-event-row-stack";
-const HUD_ICON_CLOCK_KEY = "hud-icon-clock";
-const HUD_ICON_PLAYERS_KEY = "hud-icon-players";
-const HUD_ICON_TARGET_KEY = "hud-icon-target";
 const HUD_POWERUP_GOLD_KEY = "hud-powerup-gold";
 const HUD_POWERUP_ORANGE_KEY = "hud-powerup-orange";
 const HUD_POWERUP_RED_KEY = "hud-powerup-red";
-const HUD_STATS_BOX_KEY = "hud-stats-box";
 const GAME_RENDER_SCALE = 1;
 const CANVAS_WIDTH = WORLD_WIDTH * GAME_RENDER_SCALE;
 const CANVAS_HEIGHT = WORLD_HEIGHT * GAME_RENDER_SCALE;
 const WEAPON_HUD_REST_X = 0;
-const WEAPON_HUD_REST_Y = -8;
+const WEAPON_HUD_REST_Y = 20;
 const SHOTGUN_WEAPON_FRAME = { width: 320, height: 560 };
 const MACHINE_GUN_WEAPON_FRAME = { width: 320, height: 520 };
 
 const HUD_COLORS = {
-  panel: 0x2f170a,
-  panelAlt: 0x6d3815,
-  line: 0x8c551f,
-  lineSoft: 0xffcf78,
+  panel: 0x142331,
+  panelAlt: 0x1d3343,
+  panelLight: 0x28495f,
+  line: 0x79d8ff,
+  lineSoft: 0xb7eaff,
   gold: 0xffc857,
   goldLight: 0xffdf91,
   cyan: 0x35b7e8,
@@ -270,6 +254,7 @@ class GalleryScene extends Phaser.Scene {
   private lastRoundNumber = 0;
   private lastAimSentAt = 0;
   private lastMachineGunSendAt = 0;
+  private lastLocalMachineGunActive = false;
   private lastCrosshairX = Number.NaN;
   private lastCrosshairY = Number.NaN;
 
@@ -286,18 +271,9 @@ class GalleryScene extends Phaser.Scene {
     });
     this.load.image(GRENADE_POWERUP_KEY, grenadePowerupUrl);
     this.load.image(SKYBOX_KEY, skyboxUrl);
-    this.load.image(HUD_ACTIVE_SIGN_KEY, activeSignUrl);
-    this.load.image(HUD_AMMO_BOX_KEY, ammoBoxUrl);
-    this.load.image(HUD_EVENT_HEADER_KEY, eventHeaderUrl);
-    this.load.image(HUD_EVENT_LIST_PANEL_KEY, eventListPanelUrl);
-    this.load.image(HUD_EVENT_ROW_STACK_KEY, eventRowStackUrl);
-    this.load.image(HUD_ICON_CLOCK_KEY, iconClockUrl);
-    this.load.image(HUD_ICON_PLAYERS_KEY, iconPlayersUrl);
-    this.load.image(HUD_ICON_TARGET_KEY, iconTargetUrl);
     this.load.image(HUD_POWERUP_GOLD_KEY, powerupGoldUrl);
     this.load.image(HUD_POWERUP_ORANGE_KEY, powerupOrangeUrl);
     this.load.image(HUD_POWERUP_RED_KEY, powerupRedUrl);
-    this.load.image(HUD_STATS_BOX_KEY, statsBoxUrl);
   }
 
   create() {
@@ -402,9 +378,16 @@ class GalleryScene extends Phaser.Scene {
       return;
     }
 
+    const wasMachineGunActive = this.lastLocalMachineGunActive;
     this.players = message.players;
     this.room = message.room;
     this.serverTimeOffset = message.serverTime - Date.now();
+    const local = this.players.find((player) => player.id === this.playerId);
+    this.lastLocalMachineGunActive = Boolean(local && hasActivePowerup(local, "machine_gun", Date.now()));
+    if (!wasMachineGunActive && this.lastLocalMachineGunActive && local) {
+      this.spawnMachineGunEarnFx(local.aimX, local.aimY);
+      this.sfx.powerup("machine_gun");
+    }
     this.applyRoundSnapshot(message.round);
     this.syncTargets(message.targets);
     this.syncPowerups(message.powerups);
@@ -492,7 +475,7 @@ class GalleryScene extends Phaser.Scene {
     this.roundSubtitle.setPosition(WORLD_WIDTH / 2, panelY + 48).setText(`Wave ${this.round.wave} complete`);
     this.roundMeta
       .setPosition(WORLD_WIDTH / 2, panelY + 86)
-      .setText(`Score ${this.round.teamScore}  |  Morale ${this.round.morale}/${this.round.maxMorale}  |  Next wave in ${Math.ceil(nextRoundIn / 1000)}s`);
+      .setText(`Cleared ${this.round.targetsCleared}/${this.round.targetQuota}  |  Score ${this.round.teamScore}  |  Next wave in ${Math.ceil(nextRoundIn / 1000)}s`);
     this.roundPanel.fillStyle(HUD_COLORS.panel, 0.56);
     this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     drawHudPanel(this.roundPanel, panelX, panelY, panelWidth, panelHeight, 12);
@@ -781,6 +764,29 @@ class GalleryScene extends Phaser.Scene {
     });
   }
 
+  private spawnMachineGunEarnFx(x: number, y: number) {
+    const ring = this.add.circle(x, y, 42, 0xffc857, 0.08).setStrokeStyle(7, 0xffdf91, 0.98).setDepth(94);
+    const label = this.add.text(x, y - 54, "OVERDRIVE", hudStyle(24, "#fff5c2", "900")).setOrigin(0.5).setDepth(95);
+    label.setResolution(2);
+    this.tweens.add({
+      targets: ring,
+      radius: 112,
+      alpha: 0,
+      duration: 620,
+      ease: "back.out",
+      onComplete: () => ring.destroy()
+    });
+    this.tweens.add({
+      targets: label,
+      y: y - 86,
+      scale: { from: 0.8, to: 1.08 },
+      alpha: 0,
+      duration: 760,
+      ease: "quad.out",
+      onComplete: () => label.destroy()
+    });
+  }
+
   private spawnNukeFx(x: number, y: number) {
     const flash = this.add.circle(x, y, 80, 0xfff5c2, 0.92).setDepth(94);
     const shockwave = this.add.circle(x, y, 120, 0xf25f5c, 0).setStrokeStyle(12, 0xfff5c2, 0.98).setDepth(93);
@@ -856,7 +862,7 @@ class GalleryScene extends Phaser.Scene {
 
   private fireMachineGunIfHeld(local: PlayerSnapshot) {
     const now = Date.now();
-    if (!this.input.activePointer.isDown || !hasActivePowerup(local, "machine_gun", now) || now - this.lastMachineGunSendAt < 35) {
+    if (!this.input.activePointer.isDown || !hasActivePowerup(local, "machine_gun", now) || now - this.lastMachineGunSendAt < MACHINE_GUN_COOLDOWN_MS) {
       return;
     }
 
@@ -1062,12 +1068,12 @@ class GameHud {
   }
 
   layout() {
-    this.playerCard.setPosition(18, 16);
-    this.topStatus.setPosition(WORLD_WIDTH / 2, 18);
-    this.onlineStatus.setPosition(WORLD_WIDTH - 250, 18);
-    this.eventFeed.setPosition(WORLD_WIDTH - 214, 76);
-    this.powerups.setPosition(WORLD_WIDTH - 188, WORLD_HEIGHT - 82);
-    this.weaponPanel.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT - 14);
+    this.playerCard.setPosition(8, 8);
+    this.topStatus.setPosition(WORLD_WIDTH / 2, 8);
+    this.onlineStatus.setPosition(WORLD_WIDTH - 166, 8);
+    this.eventFeed.setPosition(WORLD_WIDTH - 164, 58);
+    this.powerups.setPosition(WORLD_WIDTH - 132, WORLD_HEIGHT - 52);
+    this.weaponPanel.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT - 6);
   }
 
   setConnectionStatus(status: string) {
@@ -1107,8 +1113,6 @@ class TopStatusHud {
   private readonly root: Phaser.GameObjects.Container;
   private readonly panel: Phaser.GameObjects.Graphics;
   private readonly progressBar: Phaser.GameObjects.Graphics;
-  private readonly targetIcon: Phaser.GameObjects.Image;
-  private readonly clockIcon: Phaser.GameObjects.Image;
   private readonly waveText: Phaser.GameObjects.Text;
   private readonly timerText: Phaser.GameObjects.Text;
   private lastWaveText = "";
@@ -1119,15 +1123,13 @@ class TopStatusHud {
   constructor(scene: Phaser.Scene) {
     this.panel = scene.add.graphics();
     this.progressBar = scene.add.graphics();
-    this.targetIcon = scene.add.image(-186, 36, HUD_ICON_TARGET_KEY).setDisplaySize(50, 49);
-    this.clockIcon = scene.add.image(74, 35, HUD_ICON_CLOCK_KEY).setDisplaySize(48, 50);
-    this.waveText = scene.add.text(-146, 34, "WAVE 1", hudStyle(22, "#fffaf0", "900")).setOrigin(0, 0.5);
-    this.timerText = scene.add.text(148, 34, "1:30", hudStyle(26, "#ffdf91", "900")).setOrigin(0.5, 0.5);
+    this.waveText = scene.add.text(-142, 34, "WAVE 1", hudStyle(22, "#f7fbff", "900")).setOrigin(0, 0.5);
+    this.timerText = scene.add.text(148, 34, "5 LEFT", hudStyle(26, "#ffdf91", "900")).setOrigin(0.5, 0.5);
     for (const text of [this.waveText, this.timerText]) {
       text.setResolution(2);
     }
     this.drawShell();
-    this.root = scene.add.container(0, 0, [this.panel, this.progressBar, this.targetIcon, this.clockIcon, this.waveText, this.timerText]).setDepth(88);
+    this.root = scene.add.container(0, 0, [this.panel, this.progressBar, this.waveText, this.timerText]).setDepth(88).setScale(0.68);
   }
 
   setPosition(x: number, y: number) {
@@ -1152,14 +1154,19 @@ class TopStatusHud {
       return;
     }
 
-    const remaining = Math.max(0, round.endsAt - now);
-    const moraleMax = Math.max(1, round.maxMorale);
-    const morale = Math.max(0, round.morale);
-    const moraleRatio = round.mode === "pve" ? Phaser.Math.Clamp(morale / moraleMax, 0, 1) : Phaser.Math.Clamp(remaining / ROUND_DURATION_MS, 0, 1);
-
     this.setText(this.waveText, "lastWaveText", round.mode === "pve" ? `WAVE ${round.wave}` : `ROUND ${round.number}`);
+    if (round.mode === "pve") {
+      const quota = Math.max(1, round.targetQuota);
+      const cleared = Phaser.Math.Clamp(round.targetsCleared, 0, quota);
+      const remainingTargets = Math.max(0, quota - cleared);
+      this.setText(this.timerText, "lastTimerText", `${remainingTargets} LEFT`);
+      this.drawProgress(cleared / quota, false);
+      return;
+    }
+
+    const remaining = Math.max(0, round.endsAt - now);
     this.setText(this.timerText, "lastTimerText", formatClock(remaining));
-    this.drawProgress(moraleRatio);
+    this.drawProgress(Phaser.Math.Clamp(remaining / ROUND_DURATION_MS, 0, 1), true);
   }
 
   private drawShell() {
@@ -1168,16 +1175,19 @@ class TopStatusHud {
     this.panel.clear();
     drawHudPanel(this.panel, -width / 2, 0, width, height, 12);
 
-    this.panel.lineStyle(2, 0x3a1a0b, 0.36);
+    drawTargetIcon(this.panel, -174, 36, 20);
+    drawClockIcon(this.panel, 72, 36, 19);
+
+    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.18);
     this.panel.lineBetween(46, 15, 46, 58);
 
-    this.panel.fillStyle(0x1f0f07, 0.72);
-    this.panel.lineStyle(3, 0x8a4516, 0.92);
+    this.panel.fillStyle(0x07131d, 0.54);
+    this.panel.lineStyle(2, HUD_COLORS.line, 0.34);
     this.panel.fillRoundedRect(-148, 58, 296, 12, 6);
     this.panel.strokeRoundedRect(-148, 58, 296, 12, 6);
   }
 
-  private drawProgress(progress: number) {
+  private drawProgress(progress: number, dangerLow = false) {
     const rounded = Math.round(progress * 200) / 200;
     if (rounded === this.lastProgress) {
       return;
@@ -1185,7 +1195,7 @@ class TopStatusHud {
 
     this.lastProgress = rounded;
     this.progressBar.clear();
-    this.progressBar.fillStyle(rounded < 0.25 ? HUD_COLORS.red : HUD_COLORS.gold, 1);
+    this.progressBar.fillStyle(dangerLow && rounded < 0.25 ? HUD_COLORS.red : HUD_COLORS.gold, 1);
     this.progressBar.fillRoundedRect(-144, 61, 288 * rounded, 6, 3);
   }
 
@@ -1202,8 +1212,6 @@ class TopStatusHud {
 class OnlineStatusHud {
   private readonly root: Phaser.GameObjects.Container;
   private readonly panel: Phaser.GameObjects.Graphics;
-  private readonly playersIcon: Phaser.GameObjects.Image;
-  private readonly activeSign: Phaser.GameObjects.Image;
   private readonly countText: Phaser.GameObjects.Text;
   private readonly stateText: Phaser.GameObjects.Text;
   private lastPlayerCount = Number.NaN;
@@ -1211,13 +1219,11 @@ class OnlineStatusHud {
 
   constructor(scene: Phaser.Scene) {
     this.panel = scene.add.graphics();
-    this.playersIcon = scene.add.image(30, 28, HUD_ICON_PLAYERS_KEY).setDisplaySize(42, 39);
-    this.activeSign = scene.add.image(154, 29, HUD_ACTIVE_SIGN_KEY).setDisplaySize(75, 46);
-    this.countText = scene.add.text(78, 29, "1 online", hudStyle(16, "#fffaf0", "900")).setOrigin(0.5);
-    this.stateText = scene.add.text(154, 29, "ACTIVE", hudStyle(13, "#fffaf0", "900")).setOrigin(0.5);
+    this.countText = scene.add.text(91, 29, "1 online", hudStyle(16, "#f7fbff", "900")).setOrigin(0.5);
+    this.stateText = scene.add.text(178, 29, "ACTIVE", hudPlainStyle(13, "#07131d", "900")).setOrigin(0.5);
     this.countText.setResolution(2);
     this.stateText.setResolution(2);
-    this.root = scene.add.container(0, 0, [this.panel, this.playersIcon, this.activeSign, this.countText, this.stateText]).setDepth(88);
+    this.root = scene.add.container(0, 0, [this.panel, this.countText, this.stateText]).setDepth(88).setScale(0.72);
     this.draw();
   }
 
@@ -1243,9 +1249,14 @@ class OnlineStatusHud {
 
   private draw() {
     this.panel.clear();
-    drawHudPanel(this.panel, 0, 0, 196, 58, 14);
-    this.panel.fillStyle(0x211008, 0.52);
-    this.panel.fillRoundedRect(54, 14, 72, 30, 10);
+    drawHudPanel(this.panel, 0, 0, 220, 58, 14);
+    drawPlayersIcon(this.panel, 30, 30);
+    this.panel.fillStyle(0x07131d, 0.36);
+    this.panel.fillRoundedRect(56, 14, 84, 30, 10);
+    this.panel.fillStyle(HUD_COLORS.green, 0.96);
+    this.panel.fillRoundedRect(146, 12, 64, 34, 9);
+    this.panel.lineStyle(2, 0xeaffdf, 0.54);
+    this.panel.strokeRoundedRect(146, 12, 64, 34, 9);
   }
 }
 
@@ -1272,12 +1283,15 @@ class PlayerCardHud {
     this.nameText = scene.add.text(116, 25, "Michael", hudStyle(16, "#fffaf0", "900")).setOrigin(0, 0.5);
     this.scoreLabel = scene.add.text(112, 58, "*", hudStyle(19, "#ffc857", "900")).setOrigin(0, 0.5);
     this.scoreText = scene.add.text(138, 58, "0", hudStyle(25, "#ffdf91", "900")).setOrigin(0, 0.5);
-    this.streakText = scene.add.text(64, 91, "STREAK 0", hudStyle(10, "#fffaf0", "900")).setOrigin(0.5, 0.5);
+    this.streakText = scene.add.text(64, 91, `STREAK 0/${MACHINE_GUN_STREAK_THRESHOLD}`, hudStyle(10, "#fffaf0", "900")).setOrigin(0.5, 0.5);
     this.accuracyText = scene.add.text(176, 91, "ACCURACY 0%", hudStyle(10, "#fffaf0", "900")).setOrigin(0.5, 0.5);
     for (const text of [this.badgeText, this.nameText, this.scoreLabel, this.scoreText, this.streakText, this.accuracyText]) {
       text.setResolution(2);
     }
-    this.root = scene.add.container(0, 0, [this.panel, this.badgeText, this.nameText, this.scoreLabel, this.scoreText, this.streakText, this.accuracyText]).setDepth(88);
+    this.root = scene.add
+      .container(0, 0, [this.panel, this.badgeText, this.nameText, this.scoreLabel, this.scoreText, this.streakText, this.accuracyText])
+      .setDepth(88)
+      .setScale(0.7);
     this.draw("MG");
   }
 
@@ -1295,7 +1309,7 @@ class PlayerCardHud {
       this.setText(this.badgeText, "lastBadge", "--");
       this.setText(this.nameText, "lastName", truncateHudText(this.connectionStatus || "Joining...", 22));
       this.setText(this.scoreText, "lastScore", "0");
-      this.setText(this.streakText, "lastStreak", "STREAK 0");
+      this.setText(this.streakText, "lastStreak", `STREAK 0/${MACHINE_GUN_STREAK_THRESHOLD}`);
       this.setText(this.accuracyText, "lastAccuracy", "ACCURACY 0%");
       this.draw("--");
       return;
@@ -1306,7 +1320,8 @@ class PlayerCardHud {
     this.setText(this.badgeText, "lastBadge", badge);
     this.setText(this.nameText, "lastName", truncateHudText(player.name, 16));
     this.setText(this.scoreText, "lastScore", `${player.score}`);
-    this.setText(this.streakText, "lastStreak", `STREAK ${player.streak}`);
+    const streakLabel = badge === "MG" ? "OVERDRIVE" : `STREAK ${Math.min(player.streak, MACHINE_GUN_STREAK_THRESHOLD)}/${MACHINE_GUN_STREAK_THRESHOLD}`;
+    this.setText(this.streakText, "lastStreak", streakLabel);
     this.setText(this.accuracyText, "lastAccuracy", `ACCURACY ${accuracy}%`);
     this.draw(badge);
   }
@@ -1319,17 +1334,17 @@ class PlayerCardHud {
     this.lastDrawnBadge = badge;
     this.panel.clear();
     drawHudPanel(this.panel, 0, 0, 248, 106, 12);
-    this.panel.fillStyle(0x1c0d05, 0.9);
-    this.panel.lineStyle(4, badge === "MG" ? HUD_COLORS.gold : 0x7b421a, 0.95);
+    this.panel.fillStyle(0x07131d, 0.72);
+    this.panel.lineStyle(4, badge === "MG" ? HUD_COLORS.gold : HUD_COLORS.line, 0.95);
     this.panel.fillCircle(48, 48, 36);
     this.panel.strokeCircle(48, 48, 36);
-    this.panel.lineStyle(7, badge === "MG" ? HUD_COLORS.gold : 0x1c0d05, 0.18);
+    this.panel.lineStyle(7, badge === "MG" ? HUD_COLORS.gold : HUD_COLORS.line, 0.16);
     this.panel.strokeCircle(48, 48, 43);
-    this.panel.fillStyle(0x1c0d05, 0.86);
+    this.panel.fillStyle(0x07131d, 0.58);
     this.panel.fillRoundedRect(100, 14, 132, 25, 7);
     this.panel.fillRoundedRect(100, 45, 132, 28, 7);
-    this.panel.fillStyle(0x5d3215, 0.94);
-    this.panel.lineStyle(2, 0x2d1508, 0.9);
+    this.panel.fillStyle(HUD_COLORS.panelLight, 0.88);
+    this.panel.lineStyle(2, HUD_COLORS.lineSoft, 0.28);
     this.panel.fillRoundedRect(17, 78, 94, 23, 6);
     this.panel.strokeRoundedRect(17, 78, 94, 23, 6);
     this.panel.fillRoundedRect(122, 78, 109, 23, 6);
@@ -1349,8 +1364,6 @@ class PlayerCardHud {
 class EventFeedHud {
   private readonly root: Phaser.GameObjects.Container;
   private readonly panel: Phaser.GameObjects.Graphics;
-  private readonly header: Phaser.GameObjects.Image;
-  private readonly listPanel: Phaser.GameObjects.Image;
   private readonly title: Phaser.GameObjects.Text;
   private readonly rows: EventFeedRow[] = [];
   private events: HudEvent[] = [];
@@ -1362,13 +1375,11 @@ class EventFeedHud {
 
   constructor(scene: Phaser.Scene) {
     this.panel = scene.add.graphics();
-    this.header = scene.add.image(108, 24, HUD_EVENT_HEADER_KEY).setDisplaySize(190, 79);
-    this.listPanel = scene.add.image(108, 90, HUD_EVENT_LIST_PANEL_KEY).setDisplaySize(190, 99);
-    this.title = scene.add.text(110, 22, "EVENT FEED", hudStyle(15, "#fffaf0", "900")).setOrigin(0.5, 0.5);
+    this.title = scene.add.text(110, 22, "EVENT FEED", hudStyle(15, "#f7fbff", "900")).setOrigin(0.5, 0.5);
     this.title.setResolution(2);
-    this.root = scene.add.container(0, 0, [this.panel, this.listPanel, this.header, this.title]).setDepth(88);
+    this.root = scene.add.container(0, 0, [this.panel, this.title]).setDepth(88).setScale(0.72);
 
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 2; i += 1) {
       const row = new EventFeedRow(scene, 13, 52 + i * 31);
       this.rows.push(row);
       this.root.add(row.container);
@@ -1398,7 +1409,7 @@ class EventFeedHud {
 
   push(event: HudEvent) {
     this.events.unshift(event);
-    this.events = this.events.slice(0, 3);
+    this.events = this.events.slice(0, 2);
     this.dirty = true;
     this.renderRows(Date.now());
   }
@@ -1452,11 +1463,11 @@ class EventFeedHud {
     const width = 216;
     const height = visibleRows > 0 ? 48 + visibleRows * 31 : 50;
     this.panel.clear();
-    this.panel.fillStyle(0x1f0e05, 0.22);
-    this.panel.fillRoundedRect(8, 16, width - 16, height + 4, 12);
-    this.listPanel.setVisible(visibleRows > 0);
-    this.listPanel.setDisplaySize(190, Math.max(66, 30 + visibleRows * 32));
-    this.listPanel.setPosition(108, 48 + Math.max(34, visibleRows * 16));
+    drawHudPanel(this.panel, 8, 4, width - 16, height + 8, 10);
+    this.panel.fillStyle(HUD_COLORS.cyan, 0.18);
+    this.panel.fillRoundedRect(15, 11, width - 30, 24, 7);
+    this.panel.lineStyle(1, HUD_COLORS.lineSoft, 0.22);
+    this.panel.lineBetween(22, 42, width - 22, 42);
   }
 }
 
@@ -1504,8 +1515,8 @@ class EventFeedRow {
     this.label.setText(label);
     this.value.setText(event.value);
     this.graphics.clear();
-    this.graphics.fillStyle(0x6b3715, 0.86);
-    this.graphics.lineStyle(2, 0x2b1307, 0.5);
+    this.graphics.fillStyle(HUD_COLORS.panelAlt, 0.88);
+    this.graphics.lineStyle(2, HUD_COLORS.lineSoft, 0.24);
     this.graphics.fillRoundedRect(0, 0, 196, 26, 6);
     this.graphics.strokeRoundedRect(0, 0, 196, 26, 6);
     this.graphics.fillStyle(color, 0.26);
@@ -1522,7 +1533,7 @@ class PowerupBadgesHud {
   private lastVisible: boolean | null = null;
 
   constructor(scene: Phaser.Scene) {
-    this.root = scene.add.container(0, 0).setDepth(88);
+    this.root = scene.add.container(0, 0).setDepth(88).setScale(0.72);
     for (let i = 0; i < 3; i += 1) {
       const slot = new PowerupBadgeSlot(scene, i * 60, 0);
       this.slots.push(slot);
@@ -1602,8 +1613,8 @@ class PowerupBadgeSlot {
     this.labelText.setText(powerupLabel(kind).toUpperCase());
     this.timerText.setText(`00:${seconds.toString().padStart(2, "0")}`);
     this.graphics.clear();
-    this.graphics.fillStyle(0x5d3215, 0.9);
-    this.graphics.lineStyle(2, 0x2c1307, 0.72);
+    this.graphics.fillStyle(HUD_COLORS.panelAlt, 0.9);
+    this.graphics.lineStyle(2, HUD_COLORS.lineSoft, 0.28);
     this.graphics.fillRoundedRect(-35, 28, 70, 32, 7);
     this.graphics.strokeRoundedRect(-35, 28, 70, 32, 7);
     this.graphics.lineStyle(4, color, 0.16);
@@ -1614,55 +1625,22 @@ class PowerupBadgeSlot {
 class WeaponPanelHud {
   private readonly scene: Phaser.Scene;
   private readonly root: Phaser.GameObjects.Container;
-  private readonly panel: Phaser.GameObjects.Graphics;
-  private readonly ammoBox: Phaser.GameObjects.Image;
-  private readonly statsBox: Phaser.GameObjects.Image;
   private readonly weapon: Phaser.GameObjects.Container;
   private readonly weaponShadow: Phaser.GameObjects.Ellipse;
   private readonly shotgun: Phaser.GameObjects.Sprite;
   private readonly machineGun: Phaser.GameObjects.Sprite;
-  private readonly title: Phaser.GameObjects.Text;
-  private readonly status: Phaser.GameObjects.Text;
-  private readonly fireRateLabel: Phaser.GameObjects.Text;
-  private readonly damageLabel: Phaser.GameObjects.Text;
-  private readonly stats: Phaser.GameObjects.Graphics;
-  private readonly buffPanel: Phaser.GameObjects.Graphics;
-  private readonly buffSlots: BuffSlotHud[] = [];
   private activeWeapon: WeaponKind = "shotgun";
-  private lastRenderedWeapon: WeaponKind | "" = "";
   private lastRenderedFrame = -1;
   private lastVisible: boolean | null = null;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
-    this.panel = scene.add.graphics();
-    this.ammoBox = scene.add.image(-196, -49, HUD_AMMO_BOX_KEY).setDisplaySize(100, 73);
-    this.statsBox = scene.add.image(199, -49, HUD_STATS_BOX_KEY).setDisplaySize(99, 72);
-    this.buffPanel = scene.add.graphics();
     this.weapon = scene.add.container(WEAPON_HUD_REST_X, WEAPON_HUD_REST_Y);
-    this.weaponShadow = scene.add.ellipse(0, -3, 136, 14, 0x000000, 0.24);
-    this.shotgun = scene.add.sprite(0, 0, SHOTGUN_WEAPON_KEY, 2).setOrigin(0.5, 1).setDisplaySize(166, 290);
-    this.machineGun = scene.add.sprite(0, 0, MACHINE_GUN_WEAPON_KEY, 2).setOrigin(0.5, 1).setDisplaySize(176, 286).setAlpha(0);
+    this.weaponShadow = scene.add.ellipse(0, -3, 68, 6, 0x000000, 0.16);
+    this.shotgun = scene.add.sprite(0, 0, SHOTGUN_WEAPON_KEY, 2).setOrigin(0.5, 1).setDisplaySize(86, 150);
+    this.machineGun = scene.add.sprite(0, 0, MACHINE_GUN_WEAPON_KEY, 2).setOrigin(0.5, 1).setDisplaySize(92, 150).setAlpha(0);
     this.weapon.add([this.weaponShadow, this.shotgun, this.machineGun]);
-
-    this.title = scene.add.text(0, -96, "SHOTGUN", hudStyle(14, "#fffaf0", "900")).setOrigin(0.5);
-    this.status = scene.add.text(-196, -30, "READY", hudStyle(16, "#fffaf0", "900")).setOrigin(0.5);
-    this.fireRateLabel = scene.add.text(169, -62, "RATE", hudStyle(8, "#fffaf0", "900")).setOrigin(0, 0.5);
-    this.damageLabel = scene.add.text(169, -38, "DMG", hudStyle(8, "#fffaf0", "900")).setOrigin(0, 0.5);
-    this.stats = scene.add.graphics();
-    for (const text of [this.title, this.status, this.fireRateLabel, this.damageLabel]) {
-      text.setResolution(2);
-    }
-
-    this.root = scene.add
-      .container(0, 0, [this.weapon, this.buffPanel, this.panel, this.ammoBox, this.statsBox, this.title, this.status, this.fireRateLabel, this.damageLabel, this.stats])
-      .setDepth(87);
-    for (let i = 0; i < 6; i += 1) {
-      const slot = new BuffSlotHud(scene, -104 + i * 22, -79);
-      this.buffSlots.push(slot);
-      this.root.add(slot.container);
-    }
-    this.drawShell();
+    this.root = scene.add.container(0, 0, [this.weapon]).setDepth(87);
   }
 
   setPosition(x: number, y: number) {
@@ -1678,21 +1656,9 @@ class WeaponPanelHud {
   }
 
   render(player: PlayerSnapshot | undefined, now: number, aimX: number) {
-    const activePowerups = getActivePowerups(player, now);
     const machineGunActive = Boolean(player && hasActivePowerup(player, "machine_gun", now));
     const weapon = machineGunActive ? "machine_gun" : "shotgun";
     this.renderWeapon(weapon, weaponFrameForAim(aimX));
-    if (weapon !== this.lastRenderedWeapon) {
-      this.lastRenderedWeapon = weapon;
-      this.title.setText(machineGunActive ? "MACHINE GUN" : "SHOTGUN");
-      this.status.setText(machineGunActive ? "ACTIVE" : "READY");
-      this.drawStats(machineGunActive);
-    }
-
-    for (let i = 0; i < this.buffSlots.length; i += 1) {
-      const powerup = activePowerups[i];
-      this.buffSlots[i].render(powerup?.kind);
-    }
   }
 
   kick() {
@@ -1702,10 +1668,10 @@ class WeaponPanelHud {
     const machineGunKick = this.activeWeapon === "machine_gun";
     this.scene.tweens.add({
       targets: this.weapon,
-      x: { from: WEAPON_HUD_REST_X + (machineGunKick ? -8 : -14), to: WEAPON_HUD_REST_X },
-      y: { from: WEAPON_HUD_REST_Y + (machineGunKick ? 4 : 10), to: WEAPON_HUD_REST_Y },
-      angle: { from: machineGunKick ? -1 : -2, to: 0 },
-      duration: machineGunKick ? 92 : 170,
+      x: { from: WEAPON_HUD_REST_X + (machineGunKick ? -4 : -7), to: WEAPON_HUD_REST_X },
+      y: { from: WEAPON_HUD_REST_Y + (machineGunKick ? 2 : 5), to: WEAPON_HUD_REST_Y },
+      angle: { from: machineGunKick ? -0.7 : -1.2, to: 0 },
+      duration: machineGunKick ? 150 : 140,
       ease: "back.out"
     });
   }
@@ -1735,64 +1701,6 @@ class WeaponPanelHud {
       duration: 120,
       ease: "quad.out"
     });
-  }
-
-  private drawShell() {
-    this.panel.clear();
-    drawHudPanel(this.panel, -230, -88, 460, 88, 12);
-    this.panel.fillStyle(0x3b1b0b, 0.42);
-    this.panel.lineStyle(2, 0x2a1207, 0.6);
-    this.panel.fillRoundedRect(-136, -70, 272, 58, 8);
-    this.panel.strokeRoundedRect(-136, -70, 272, 58, 8);
-    this.panel.fillStyle(HUD_COLORS.gold, 0.95);
-    for (let i = 0; i < 4; i += 1) {
-      this.panel.fillRoundedRect(-218 + i * 13, -65, 7, 30, 4);
-    }
-
-    this.buffPanel.clear();
-    this.buffPanel.fillStyle(0x5d3215, 0.86);
-    this.buffPanel.lineStyle(2, 0x2a1207, 0.62);
-    this.buffPanel.fillRoundedRect(-116, -90, 142, 24, 7);
-    this.buffPanel.strokeRoundedRect(-116, -90, 142, 24, 7);
-  }
-
-  private drawStats(machineGunActive: boolean) {
-    const fireRate = machineGunActive ? 8 : 3;
-    const damage = machineGunActive ? 5 : 8;
-    this.stats.clear();
-    drawMeterBlocks(this.stats, 215, -68, 6, Math.min(6, fireRate), HUD_COLORS.cyan);
-    drawMeterBlocks(this.stats, 215, -44, 6, Math.min(6, damage), HUD_COLORS.gold);
-  }
-}
-
-class BuffSlotHud {
-  readonly container: Phaser.GameObjects.Container;
-  private readonly graphics: Phaser.GameObjects.Graphics;
-  private readonly label: Phaser.GameObjects.Text;
-  private lastKind = "";
-
-  constructor(scene: Phaser.Scene, x: number, y: number) {
-    this.graphics = scene.add.graphics();
-    this.label = scene.add.text(0, 0, "", hudStyle(12, "#f7fbff", "900")).setOrigin(0.5);
-    this.label.setResolution(2);
-    this.container = scene.add.container(x, y, [this.graphics, this.label]);
-  }
-
-  render(kind?: PowerupKind) {
-    const nextKind = kind ?? "";
-    if (nextKind === this.lastKind) {
-      return;
-    }
-
-    this.lastKind = nextKind;
-    this.graphics.clear();
-    const active = Boolean(kind);
-    const color = kind ? powerupColor(kind) : HUD_COLORS.lineSoft;
-    this.graphics.fillStyle(active ? HUD_COLORS.panelAlt : HUD_COLORS.panel, active ? 0.9 : 0.72);
-    this.graphics.lineStyle(active ? 3 : 2, color, active ? 0.95 : 0.28);
-    this.graphics.fillRoundedRect(-10, -10, 20, 20, 5);
-    this.graphics.strokeRoundedRect(-10, -10, 20, 20, 5);
-    this.label.setText(kind ? powerupIcon(kind).toUpperCase() : "");
   }
 }
 
@@ -2153,25 +2061,50 @@ function chickenDisplayWidth(snapshot: TargetSnapshot) {
 }
 
 function drawHudPanel(graphics: Phaser.GameObjects.Graphics, x: number, y: number, width: number, height: number, radius: number) {
-  graphics.fillStyle(0x000000, 0.24);
-  graphics.fillRoundedRect(x + 4, y + 6, width, height, radius);
-  graphics.lineStyle(9, 0x4d230c, 0.18);
-  graphics.strokeRoundedRect(x - 1, y - 1, width + 2, height + 2, radius + 2);
-  graphics.fillStyle(0x5d3215, 0.94);
+  graphics.fillStyle(0x07131d, 0.22);
+  graphics.fillRoundedRect(x + 3, y + 5, width, height, radius);
+  graphics.fillStyle(HUD_COLORS.panel, 0.92);
   graphics.fillRoundedRect(x, y, width, height, radius);
-  graphics.fillStyle(0x8f4e1f, 0.35);
+  graphics.fillStyle(HUD_COLORS.panelLight, 0.34);
   graphics.fillRoundedRect(x + 5, y + 5, width - 10, Math.max(18, height * 0.42), Math.max(4, radius - 2));
-  graphics.lineStyle(3, 0x2d1508, 0.86);
+  graphics.lineStyle(2, HUD_COLORS.line, 0.72);
   graphics.strokeRoundedRect(x, y, width, height, radius);
   graphics.lineStyle(1, 0xffdf91, 0.22);
   graphics.strokeRoundedRect(x + 4, y + 4, width - 8, height - 8, Math.max(3, radius - 3));
 }
 
-function drawMeterBlocks(graphics: Phaser.GameObjects.Graphics, x: number, y: number, count: number, filled: number, color: number) {
-  for (let i = 0; i < count; i += 1) {
-    graphics.fillStyle(i < filled ? color : HUD_COLORS.lineSoft, i < filled ? 0.96 : 0.16);
-    graphics.fillRoundedRect(x + i * 8, y, 6, 14, 2);
-  }
+function drawTargetIcon(graphics: Phaser.GameObjects.Graphics, x: number, y: number, radius: number) {
+  graphics.fillStyle(0x07131d, 0.54);
+  graphics.fillCircle(x, y, radius + 5);
+  graphics.lineStyle(4, HUD_COLORS.red, 0.96);
+  graphics.strokeCircle(x, y, radius);
+  graphics.lineStyle(3, HUD_COLORS.white, 0.9);
+  graphics.strokeCircle(x, y, radius - 8);
+  graphics.fillStyle(HUD_COLORS.red, 0.96);
+  graphics.fillCircle(x, y, 4);
+}
+
+function drawClockIcon(graphics: Phaser.GameObjects.Graphics, x: number, y: number, radius: number) {
+  graphics.fillStyle(0x07131d, 0.54);
+  graphics.fillCircle(x, y, radius + 5);
+  graphics.lineStyle(4, HUD_COLORS.gold, 0.96);
+  graphics.strokeCircle(x, y, radius);
+  graphics.lineStyle(3, HUD_COLORS.white, 0.9);
+  graphics.lineBetween(x, y, x, y - 11);
+  graphics.lineBetween(x, y, x + 9, y + 4);
+  graphics.fillStyle(HUD_COLORS.goldLight, 0.96);
+  graphics.fillCircle(x, y, 3);
+}
+
+function drawPlayersIcon(graphics: Phaser.GameObjects.Graphics, x: number, y: number) {
+  graphics.fillStyle(0x07131d, 0.54);
+  graphics.fillCircle(x - 8, y - 2, 8);
+  graphics.fillCircle(x + 7, y - 4, 7);
+  graphics.fillRoundedRect(x - 20, y + 8, 25, 12, 6);
+  graphics.fillRoundedRect(x, y + 8, 22, 12, 6);
+  graphics.lineStyle(2, HUD_COLORS.lineSoft, 0.72);
+  graphics.strokeCircle(x - 8, y - 2, 8);
+  graphics.strokeCircle(x + 7, y - 4, 7);
 }
 
 function drawEventIcon(graphics: Phaser.GameObjects.Graphics, kind: HudEventKind, x: number, y: number, color: number) {
@@ -2258,8 +2191,17 @@ function hudStyle(fontSize: number, color: string, fontStyle: string): Phaser.Ty
     fontFamily: "Inter, Arial, sans-serif",
     fontSize: `${fontSize}px`,
     fontStyle,
-    stroke: "#351807",
+    stroke: "#07131d",
     strokeThickness: 3
+  };
+}
+
+function hudPlainStyle(fontSize: number, color: string, fontStyle: string): Phaser.Types.GameObjects.Text.TextStyle {
+  return {
+    color,
+    fontFamily: "Inter, Arial, sans-serif",
+    fontSize: `${fontSize}px`,
+    fontStyle
   };
 }
 

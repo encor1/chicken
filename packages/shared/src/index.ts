@@ -2,12 +2,13 @@ export const WORLD_WIDTH = 1280;
 export const WORLD_HEIGHT = 720;
 export const TICK_RATE = 30;
 export const SNAPSHOT_RATE = 20;
-export const MAX_TARGETS = 18;
+export const MAX_TARGETS = 12;
 export const SHOT_COOLDOWN_MS = 160;
 export const MAX_POWERUPS = 4;
-export const POWERUP_DURATION_MS = 8000;
+export const POWERUP_DURATION_MS = 5000;
 export const POWERUP_TTL_MS = 11000;
-export const MACHINE_GUN_COOLDOWN_MS = 35;
+export const MACHINE_GUN_COOLDOWN_MS = 85;
+export const MACHINE_GUN_STREAK_THRESHOLD = 8;
 export const ROUND_DURATION_MS = 90_000;
 export const ROUND_INTERMISSION_MS = 10_000;
 
@@ -34,7 +35,7 @@ export type GameMode = "pve" | "pvp";
 export type RoomFilter = "all" | GameMode;
 export type TargetKind = "cluck" | "runner" | "bonus" | "giant" | "royal";
 export type PowerupKind = "machine_gun" | "double_points" | "nuke";
-export type UpgradeKind = "rapid_fire" | "steady_hands" | "powerup_rush" | "score_surge";
+export type UpgradeKind = "rapid_fire" | "steady_hands" | "overdrive" | "score_surge";
 
 export type TargetSnapshot = {
   id: string;
@@ -109,6 +110,8 @@ export type RoundSnapshot = {
   endsAt: number;
   difficulty: number;
   targetBudget: number;
+  targetQuota: number;
+  targetsCleared: number;
   teamScore: number;
   morale: number;
   maxMorale: number;

@@ -8,11 +8,9 @@ import { fileURLToPath } from "node:url";
 import type { WebSocket } from "ws";
 import {
   MACHINE_GUN_COOLDOWN_MS,
-  MAX_POWERUPS,
+  MACHINE_GUN_STREAK_THRESHOLD,
   MAX_TARGETS,
   POWERUP_DURATION_MS,
-  POWERUP_TTL_MS,
-  POWERUP_SPAWN_AREA,
   ROUND_DURATION_MS,
   ROUND_INTERMISSION_MS,
   SHOT_COOLDOWN_MS,
@@ -86,26 +84,31 @@ type GameRoom = {
   nextPowerupId: number;
   nextShotId: number;
   nextTauntId: number;
+  nextTargetSpawnAt: number;
 };
 
 const BASE_TEAM_MORALE = 30;
 const EMPTY_ROOM_TTL_MS = 60_000;
+const PVE_INTERMISSION_MS = 4500;
+const OVERDRIVE_DURATION_BONUS_MS = 750;
+const TARGET_SPAWN_INTERVAL_MS = 380;
+const INITIAL_TARGET_FILL_RATIO = 0.58;
 
 const UPGRADE_CATALOG: Record<UpgradeKind, Omit<CoopUpgradeSnapshot, "stacks">> = {
   rapid_fire: {
     kind: "rapid_fire",
     title: "Rapid Fire",
-    description: "Shots cool down 12% faster"
+    description: "Shots cool down 6% faster"
   },
   steady_hands: {
     kind: "steady_hands",
     title: "Steady Hands",
     description: "Streak bonus can climb higher"
   },
-  powerup_rush: {
-    kind: "powerup_rush",
-    title: "Powerup Rush",
-    description: "+1 powerup can be active on the range"
+  overdrive: {
+    kind: "overdrive",
+    title: "Overdrive",
+    description: "+0.75s earned machine gun duration"
   },
   score_surge: {
     kind: "score_surge",
@@ -320,13 +323,7 @@ function stepWorld() {
       continue;
     }
 
-    while (room.targets.size < room.round.targetBudget) {
-      spawnTarget(room, false);
-    }
-
-    while (room.powerups.size < getPowerupLimit(room)) {
-      spawnPowerup(room, now);
-    }
+    spawnDueTarget(room, now);
 
     trimEventBuffers(room);
   }
@@ -366,46 +363,39 @@ function handleShot(room: GameRoom, player: Player, x: number, y: number) {
   player.aimX = point.x;
   player.aimY = point.y;
 
-  const powerup = findPowerup(room, point.x, point.y);
-  if (powerup) {
-    room.powerups.delete(powerup.id);
-    const nukePoints = powerup.kind === "nuke" ? detonateNuke(room, player, now) : 0;
-    if (powerup.kind !== "nuke") {
-      applyPowerup(player, powerup.kind, now);
-    }
-    room.shots.push({
-      id: `s${room.nextShotId++}`,
-      playerId: player.id,
-      playerName: player.name,
-      playerHue: player.hue,
-      x: point.x,
-      y: point.y,
-      hit: true,
-      points: nukePoints,
-      targetId: powerup.id,
-      powerupKind: powerup.kind,
-      createdAt: now
-    });
-    return;
-  }
-
   const hit = findHit(room, point.x, point.y);
   let points = 0;
   let targetId: string | undefined;
+  const machineGunActive = hasPowerup(player, "machine_gun", now);
 
   if (hit) {
     targetId = hit.id;
     room.targets.delete(hit.id);
     player.hits += 1;
-    player.streak += 1;
-    points = hit.points + Math.min(getStreakBonusCap(room), player.streak - 1);
+    const streakGain = getStreakGain(hit.kind);
+    if (machineGunActive) {
+      points = hit.points;
+    } else {
+      player.streak += streakGain;
+      points = hit.points + Math.min(getStreakBonusCap(room), player.streak - 1);
+    }
     if (hasPowerup(player, "double_points", now)) {
       points *= 2;
     }
     player.score += points;
     if (room.mode === "pve") {
       room.coopRun.teamScore += points;
+      room.round = {
+        ...room.round,
+        targetsCleared: Math.min(room.round.targetQuota, room.round.targetsCleared + 1)
+      };
       refreshRoundRunStats(room);
+      if (room.round.targetsCleared >= room.round.targetQuota) {
+        endRound(room, now);
+      }
+    }
+    if (room.round.state === "active" && !machineGunActive && player.streak >= MACHINE_GUN_STREAK_THRESHOLD) {
+      activateMachineGun(room, player, now);
     }
   } else {
     player.streak = 0;
@@ -441,33 +431,22 @@ function findHit(room: GameRoom, x: number, y: number): Target | null {
   return best;
 }
 
-function findPowerup(room: GameRoom, x: number, y: number): Powerup | null {
-  let best: Powerup | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  for (const powerup of room.powerups.values()) {
-    const leniency = powerup.radius + 18;
-    const dist = distanceSquared({ x, y }, powerup);
-    if (dist <= leniency * leniency && dist < bestDistance) {
-      best = powerup;
-      bestDistance = dist;
-    }
-  }
-
-  return best;
-}
-
-function applyPowerup(player: Player, kind: PowerupKind, now: number) {
+function applyPowerup(player: Player, kind: PowerupKind, now: number, durationMs = POWERUP_DURATION_MS) {
   const existing = player.activePowerups.find((powerup) => powerup.kind === kind);
   if (existing) {
-    existing.expiresAt = now + POWERUP_DURATION_MS;
+    existing.expiresAt = now + durationMs;
     return;
   }
 
   player.activePowerups.push({
     kind,
-    expiresAt: now + POWERUP_DURATION_MS
+    expiresAt: now + durationMs
   });
+}
+
+function activateMachineGun(room: GameRoom, player: Player, now: number) {
+  player.streak = 0;
+  applyPowerup(player, "machine_gun", now, getMachineGunDuration(room));
 }
 
 function hasPowerup(player: Player, kind: PowerupKind, now: number) {
@@ -478,41 +457,7 @@ function getShotCooldown(room: GameRoom, player: Player, now: number) {
   if (hasPowerup(player, "machine_gun", now)) {
     return MACHINE_GUN_COOLDOWN_MS;
   }
-  return Math.max(70, Math.round(SHOT_COOLDOWN_MS * 0.88 ** getUpgradeStacks(room, "rapid_fire")));
-}
-
-function detonateNuke(room: GameRoom, player: Player, now: number) {
-  let points = 0;
-  const hitCount = room.targets.size;
-  for (const target of room.targets.values()) {
-    points += target.points;
-    room.shots.push({
-      id: `s${room.nextShotId++}`,
-      playerId: player.id,
-      playerName: player.name,
-      playerHue: player.hue,
-      x: target.x,
-      y: target.y,
-      hit: true,
-      points: target.points,
-      targetId: target.id,
-      createdAt: now
-    });
-  }
-
-  if (hasPowerup(player, "double_points", now)) {
-    points *= 2;
-  }
-
-  room.targets.clear();
-  player.hits += Math.max(1, hitCount);
-  player.streak += Math.max(1, hitCount);
-  player.score += points;
-  if (room.mode === "pve") {
-    room.coopRun.teamScore += points;
-    refreshRoundRunStats(room);
-  }
-  return points;
+  return Math.max(110, Math.round(SHOT_COOLDOWN_MS * 0.94 ** getUpgradeStacks(room, "rapid_fire")));
 }
 
 function handleTaunt(room: GameRoom, player: Player) {
@@ -544,7 +489,7 @@ function handleUpgradeChoice(room: GameRoom, player: Player, kind: UpgradeKind) 
 }
 
 function updateRound(room: GameRoom, now: number) {
-  if (room.round.state === "active" && now >= room.round.endsAt) {
+  if (room.round.state === "active" && room.mode === "pvp" && now >= room.round.endsAt) {
     endRound(room, now);
     return;
   }
@@ -570,7 +515,7 @@ function endRound(room: GameRoom, now: number) {
     ...room.round,
     state: "ended",
     endsAt: now,
-    nextRoundStartsAt: now + ROUND_INTERMISSION_MS,
+    nextRoundStartsAt: now + (room.mode === "pve" ? PVE_INTERMISSION_MS : ROUND_INTERMISSION_MS),
     teamScore: room.mode === "pve" ? room.coopRun.teamScore : getRoomScore(room),
     morale: room.mode === "pve" ? room.coopRun.morale : 0,
     maxMorale: room.mode === "pve" ? room.coopRun.maxMorale : 0,
@@ -620,14 +565,13 @@ function startNextRound(room: GameRoom, now: number) {
   room.powerups.clear();
   room.shots.length = 0;
   room.taunts.length = 0;
+  room.nextTargetSpawnAt = now + getTargetSpawnInterval(room);
 
   for (const player of room.players.values()) {
     resetPlayerForRound(player);
   }
 
-  for (let i = 0; i < room.round.targetBudget; i += 1) {
-    spawnTarget(room, true);
-  }
+  seedInitialTargets(room);
 }
 
 function startNewRun(room: GameRoom, now: number) {
@@ -637,14 +581,13 @@ function startNewRun(room: GameRoom, now: number) {
   room.powerups.clear();
   room.shots.length = 0;
   room.taunts.length = 0;
+  room.nextTargetSpawnAt = now + getTargetSpawnInterval(room);
 
   for (const player of room.players.values()) {
     resetPlayerForRound(player);
   }
 
-  for (let i = 0; i < room.round.targetBudget; i += 1) {
-    spawnTarget(room, true);
-  }
+  seedInitialTargets(room);
 }
 
 function restartRoom(room: GameRoom, now: number) {
@@ -654,26 +597,28 @@ function restartRoom(room: GameRoom, now: number) {
   room.powerups.clear();
   room.shots.length = 0;
   room.taunts.length = 0;
+  room.nextTargetSpawnAt = now + getTargetSpawnInterval(room);
 
   for (const player of room.players.values()) {
     resetPlayerForRound(player);
   }
 
-  for (let i = 0; i < room.round.targetBudget; i += 1) {
-    spawnTarget(room, true);
-  }
+  seedInitialTargets(room);
 }
 
 function createRound(room: GameRoom, number: number, now: number): RoundSnapshot {
+  const targetQuota = room.mode === "pve" ? getTargetQuota(room, number) : 0;
   return {
     number,
     mode: room.mode,
     wave: number,
     state: "active",
     startedAt: now,
-    endsAt: now + ROUND_DURATION_MS,
+    endsAt: room.mode === "pve" ? Number.MAX_SAFE_INTEGER : now + ROUND_DURATION_MS,
     difficulty: getDifficulty(room, number),
     targetBudget: getTargetBudget(room, number),
+    targetQuota,
+    targetsCleared: 0,
     teamScore: room.mode === "pve" ? room.coopRun.teamScore : 0,
     morale: room.mode === "pve" ? room.coopRun.morale : 0,
     maxMorale: room.mode === "pve" ? room.coopRun.maxMorale : 0,
@@ -750,8 +695,8 @@ function getStreakBonusCap(room: GameRoom) {
   return 8 + getUpgradeStacks(room, "steady_hands") * 4;
 }
 
-function getPowerupLimit(room: GameRoom) {
-  return Math.min(MAX_POWERUPS + getUpgradeStacks(room, "powerup_rush"), 8);
+function getMachineGunDuration(room: GameRoom) {
+  return POWERUP_DURATION_MS + getUpgradeStacks(room, "overdrive") * OVERDRIVE_DURATION_BONUS_MS;
 }
 
 function getScoreMultiplier(room: GameRoom) {
@@ -793,6 +738,7 @@ function refreshRoundRunStats(room: GameRoom) {
     morale: room.coopRun.morale,
     maxMorale: room.coopRun.maxMorale,
     escapedTargets: room.coopRun.escapedTargets,
+    targetsCleared: room.round.targetsCleared,
     runUpgrades: getRunUpgrades(room)
   };
 }
@@ -820,9 +766,61 @@ function getTargetBudget(room: GameRoom, wave: number) {
   if (room.mode === "pvp") {
     return MAX_TARGETS;
   }
-  const soloBudget = 4 + Math.floor((wave - 1) * 1.35);
-  const extraPlayerBudget = (Math.max(1, room.players.size) - 1) * 3;
+  const soloBudget = 3 + Math.floor((wave - 1) * 0.95);
+  const extraPlayerBudget = (Math.max(1, room.players.size) - 1) * 2;
   return Math.min(soloBudget + extraPlayerBudget, MAX_TARGETS);
+}
+
+function getTargetQuota(room: GameRoom, wave: number) {
+  if (room.mode === "pvp") {
+    return 0;
+  }
+  const soloQuota = 5 + Math.floor((wave - 1) * 2.2);
+  const extraPlayerQuota = (Math.max(1, room.players.size) - 1) * 4;
+  return Math.min(soloQuota + extraPlayerQuota, 32);
+}
+
+function getRemainingTargetQuota(room: GameRoom) {
+  if (room.mode !== "pve") {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(0, room.round.targetQuota - room.round.targetsCleared);
+}
+
+function seedInitialTargets(room: GameRoom) {
+  const count = Math.min(getRemainingTargetQuota(room), Math.max(2, Math.ceil(room.round.targetBudget * INITIAL_TARGET_FILL_RATIO)));
+  for (let i = 0; i < count; i += 1) {
+    spawnTarget(room, true);
+  }
+}
+
+function spawnDueTarget(room: GameRoom, now: number) {
+  const targetLimit = Math.min(room.round.targetBudget, getRemainingTargetQuota(room));
+  if (targetLimit <= 0 || room.targets.size >= targetLimit || now < room.nextTargetSpawnAt) {
+    return;
+  }
+
+  spawnTarget(room, false);
+  room.nextTargetSpawnAt = now + getTargetSpawnInterval(room);
+}
+
+function getTargetSpawnInterval(room: GameRoom) {
+  const playerPressure = Math.max(0, room.players.size - 1) * 50;
+  const wavePressure = room.mode === "pve" ? Math.min(180, (room.round.wave - 1) * 18) : 60;
+  return Math.max(240, TARGET_SPAWN_INTERVAL_MS - playerPressure - wavePressure);
+}
+
+function getStreakGain(kind: TargetKind) {
+  if (kind === "royal") {
+    return 4;
+  }
+  if (kind === "runner" || kind === "bonus") {
+    return 2;
+  }
+  if (kind === "giant") {
+    return 2;
+  }
+  return 1;
 }
 
 function shuffle<T>(items: T[]): T[] {
@@ -939,50 +937,24 @@ function randomKind(room: GameRoom): TargetKind {
   const hasGiant = [...room.targets.values()].some((target) => target.kind === "giant");
   const hasRoyal = [...room.targets.values()].some((target) => target.kind === "royal");
   const roll = Math.random();
-  const pressure = room.mode === "pve" ? Math.min(0.06, (room.round.wave - 1) * 0.006) : 0;
-  if (!hasRoyal && roll > 0.992 - pressure * 0.35) {
+  const pressure = room.mode === "pve" ? Math.min(0.04, (room.round.wave - 1) * 0.004) : 0;
+  if (!hasRoyal && roll > 0.996 - pressure * 0.25) {
     return "royal";
   }
-  if (!hasGiant && roll > 0.965 - pressure) {
+  if (!hasGiant && roll > 0.978 - pressure) {
     return "giant";
   }
-  if (roll > 0.9 - pressure) {
+  if (roll > 0.93 - pressure) {
     return "bonus";
   }
-  if (roll > 0.62 - pressure) {
+  if (roll > 0.72 - pressure) {
     return "runner";
   }
   return "cluck";
 }
 
-function spawnPowerup(room: GameRoom, now: number) {
-  const kind = randomPowerupKind();
-  const id = `u${room.nextPowerupId++}`;
-  const radius = 28;
-
-  room.powerups.set(id, {
-    id,
-    kind,
-    x: randomInRange(POWERUP_SPAWN_AREA.left + radius, POWERUP_SPAWN_AREA.right - radius),
-    y: randomInRange(POWERUP_SPAWN_AREA.top + radius, POWERUP_SPAWN_AREA.bottom - radius),
-    radius,
-    expiresAt: now + POWERUP_TTL_MS
-  });
-}
-
 function randomInRange(min: number, max: number) {
   return min + Math.random() * Math.max(0, max - min);
-}
-
-function randomPowerupKind(): PowerupKind {
-  const roll = Math.random();
-  if (roll > 0.76) {
-    return "nuke";
-  }
-  if (roll > 0.48) {
-    return "machine_gun";
-  }
-  return "double_points";
 }
 
 function createPlayer(id: string, name: string): Player {
@@ -1019,7 +991,8 @@ function createRoom(name: string, mode: GameMode, now: number): GameRoom {
     nextTargetId: 1,
     nextPowerupId: 1,
     nextShotId: 1,
-    nextTauntId: 1
+    nextTauntId: 1,
+    nextTargetSpawnAt: now
   };
   room.round = createRound(room, 1, now);
   room.emptySince = now;
