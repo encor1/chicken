@@ -45,7 +45,10 @@ const SKYBOX_KEY = "skybox";
 const HUD_POWERUP_GOLD_KEY = "hud-powerup-gold";
 const HUD_POWERUP_ORANGE_KEY = "hud-powerup-orange";
 const HUD_POWERUP_RED_KEY = "hud-powerup-red";
-const GAME_RENDER_SCALE = 1;
+// Render the canvas at a super-sampled backing resolution so the world *and* the HUD stay
+// crisp after Scale.FIT stretches the canvas to fill the viewport. The camera is zoomed by the
+// same factor (see create()), so world coordinates are unchanged — only pixel density goes up.
+const GAME_RENDER_SCALE = Math.min(Math.max(Math.ceil(window.devicePixelRatio || 1), 2), 3);
 const CANVAS_WIDTH = WORLD_WIDTH * GAME_RENDER_SCALE;
 const CANVAS_HEIGHT = WORLD_HEIGHT * GAME_RENDER_SCALE;
 const WEAPON_HUD_REST_X = 0;
@@ -206,7 +209,7 @@ function joinRoom(roomId: string) {
   playerName = readPlayerName();
   localStorage.setItem("gallery-name", playerName);
   startScreen?.classList.add("is-hidden");
-  startGame();
+  void startGame();
 }
 
 function escapeHtml(value: string) {
@@ -241,6 +244,10 @@ class GalleryScene extends Phaser.Scene {
   private roundPanel!: Phaser.GameObjects.Graphics;
   private roundSubtitle!: Phaser.GameObjects.Text;
   private roundMeta!: Phaser.GameObjects.Text;
+  private upgradePrompt!: Phaser.GameObjects.Text;
+  private waveCountdown!: Phaser.GameObjects.Text;
+  private hoveredUpgradeIndex = -1;
+  private lastCursorSelecting: boolean | null = null;
   private readonly upgradeCardTitles: Phaser.GameObjects.Text[] = [];
   private readonly upgradeCardDescriptions: Phaser.GameObjects.Text[] = [];
   private readonly upgradeCardVotes: Phaser.GameObjects.Text[] = [];
@@ -255,6 +262,7 @@ class GalleryScene extends Phaser.Scene {
   private lastAimSentAt = 0;
   private lastMachineGunSendAt = 0;
   private lastLocalMachineGunActive = false;
+  private lastLocalStreak = 0;
   private lastCrosshairX = Number.NaN;
   private lastCrosshairY = Number.NaN;
 
@@ -291,20 +299,45 @@ class GalleryScene extends Phaser.Scene {
     this.hud = new GameHud(this);
     this.hud.setConnectionStatus("Connecting...");
     this.roundPanel = this.add.graphics().setDepth(86);
-    this.roundSubtitle = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10, "", hudStyle(28, "#ffdf91", "900")).setOrigin(0.5).setDepth(101);
-    this.roundMeta = this.add.text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42, "", hudStyle(18, "#f5f7fa", "800")).setOrigin(0.5).setDepth(101);
+    this.roundSubtitle = this.add
+      .text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10, "", hudStyle(30, "#ffe6a3", "800"))
+      .setOrigin(0.5)
+      .setDepth(101)
+      .setResolution(2)
+      .setLetterSpacing(1)
+      .setShadow(0, 3, "#07131d", 6, false, true);
+    this.roundMeta = this.add
+      .text(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42, "", hudStyle(18, "#eef4f8", "700"))
+      .setOrigin(0.5)
+      .setDepth(101)
+      .setResolution(2);
+    this.upgradePrompt = this.add
+      .text(WORLD_WIDTH / 2, 0, "", hudPlainStyle(14, "#9fdcff", "800"))
+      .setOrigin(0.5)
+      .setDepth(101)
+      .setResolution(2)
+      .setLetterSpacing(3)
+      .setVisible(false);
+    this.waveCountdown = this.add
+      .text(0, 0, "", hudStyle(46, "#ffe6a3", "900"))
+      .setOrigin(0.5)
+      .setDepth(103)
+      .setResolution(2)
+      .setShadow(0, 3, "#07131d", 8, false, true)
+      .setVisible(false);
     for (let i = 0; i < 3; i += 1) {
-      const title = this.add.text(0, 0, "", hudStyle(17, "#fffaf0", "900")).setOrigin(0.5, 0).setDepth(102).setVisible(false);
+      const title = this.add.text(0, 0, "", hudStyle(19, "#fffdf7", "700")).setOrigin(0.5, 0).setDepth(102).setVisible(false).setLetterSpacing(0.4);
       const description = this.add
         .text(0, 0, "", {
-          ...hudStyle(13, "#dfeaf0", "800"),
+          ...hudStyle(13, "#c7d8e6", "600"),
           align: "center",
-          wordWrap: { width: 196 }
+          wordWrap: { width: 208 },
+          lineSpacing: 3
         })
         .setOrigin(0.5, 0)
         .setDepth(102)
         .setVisible(false);
-      const votes = this.add.text(0, 0, "", hudStyle(13, "#ffdf91", "900")).setOrigin(0.5, 1).setDepth(102).setVisible(false);
+      const votes = this.add.text(0, 0, "", hudPlainStyle(13, "#ffe6a3", "800")).setOrigin(0.5, 0.5).setDepth(102).setVisible(false).setLetterSpacing(0.5);
       title.setResolution(2);
       description.setResolution(2);
       votes.setResolution(2);
@@ -334,7 +367,16 @@ class GalleryScene extends Phaser.Scene {
       crosshair.update(delta);
     }
 
-    this.drawCrosshair(this.input.activePointer);
+    const selecting = this.round?.state === "ended" && (this.round?.upgradeOptions?.length ?? 0) > 0;
+    this.setSelectingCursor(selecting);
+    if (selecting) {
+      this.hoveredUpgradeIndex = this.upgradeIndexAtPointer(this.input.activePointer);
+      this.crosshair.setVisible(false);
+    } else {
+      this.hoveredUpgradeIndex = -1;
+      this.crosshair.setVisible(true);
+      this.drawCrosshair(this.input.activePointer);
+    }
     this.sendAim(this.input.activePointer);
     this.renderRound();
     const local = this.players.find((player) => player.id === this.playerId);
@@ -388,6 +430,11 @@ class GalleryScene extends Phaser.Scene {
       this.spawnMachineGunEarnFx(local.aimX, local.aimY);
       this.sfx.powerup("machine_gun");
     }
+    const streak = local?.streak ?? 0;
+    if (local && streak > this.lastLocalStreak && streak >= 5 && streak % 5 === 0) {
+      this.spawnStreakCelebration(streak, local.aimX, local.aimY);
+    }
+    this.lastLocalStreak = streak;
     this.applyRoundSnapshot(message.round);
     this.syncTargets(message.targets);
     this.syncPowerups(message.powerups);
@@ -403,6 +450,9 @@ class GalleryScene extends Phaser.Scene {
     if (changed && this.lastRoundNumber > 0) {
       if (round.state === "ended") {
         this.sfx.roundEnd();
+        if (round.mode === "pve") {
+          this.spawnWaveClearCelebration(round.wave);
+        }
       } else {
         this.hud.clearEvents();
         this.seenShots.clear();
@@ -422,11 +472,13 @@ class GalleryScene extends Phaser.Scene {
 
     const now = this.serverNow();
     this.roundPanel.clear();
+    this.waveCountdown.setVisible(false);
 
     if (this.round.state === "active") {
       this.roundPanel.setDepth(86);
       this.roundSubtitle.setVisible(false);
       this.roundMeta.setVisible(false);
+      this.upgradePrompt.setVisible(false);
       this.hideUpgradeCards();
       return;
     }
@@ -438,6 +490,7 @@ class GalleryScene extends Phaser.Scene {
 
     if (this.round.mode === "pvp") {
       this.hideUpgradeCards();
+      this.upgradePrompt.setVisible(false);
       const winner = this.round.winner;
       this.roundSubtitle.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 - 10).setText(winner ? `${winner.name} wins round ${this.round.number}` : `Round ${this.round.number} complete`);
       this.roundMeta.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT / 2 + 42).setText(winner ? `${winner.score} points  |  next round in ${Math.ceil(nextRoundIn / 1000)}s` : `Next round in ${Math.ceil(nextRoundIn / 1000)}s`);
@@ -452,6 +505,7 @@ class GalleryScene extends Phaser.Scene {
 
     if (this.round.state === "run_over") {
       this.hideUpgradeCards();
+      this.upgradePrompt.setVisible(false);
       const panelX = WORLD_WIDTH / 2 - 330;
       const panelY = WORLD_HEIGHT / 2 - 92;
       const panelWidth = 660;
@@ -468,21 +522,53 @@ class GalleryScene extends Phaser.Scene {
       return;
     }
 
-    const panelX = WORLD_WIDTH / 2 - 420;
-    const panelY = WORLD_HEIGHT / 2 - 180;
-    const panelWidth = 840;
-    const panelHeight = 318;
-    this.roundSubtitle.setPosition(WORLD_WIDTH / 2, panelY + 48).setText(`Wave ${this.round.wave} complete`);
+    const panelWidth = 860;
+    const panelHeight = 356;
+    const panelX = WORLD_WIDTH / 2 - panelWidth / 2;
+    const panelY = WORLD_HEIGHT / 2 - 196;
+    this.roundSubtitle.setPosition(WORLD_WIDTH / 2, panelY + 52).setText(`WAVE ${this.round.wave} COMPLETE`);
     this.roundMeta
-      .setPosition(WORLD_WIDTH / 2, panelY + 86)
-      .setText(`Cleared ${this.round.targetsCleared}/${this.round.targetQuota}  |  Score ${this.round.teamScore}  |  Next wave in ${Math.ceil(nextRoundIn / 1000)}s`);
-    this.roundPanel.fillStyle(HUD_COLORS.panel, 0.56);
+      .setPosition(WORLD_WIDTH / 2, panelY + 92)
+      .setText(`Cleared ${this.round.targetsCleared}/${this.round.targetQuota}    ·    Score ${this.round.teamScore}`);
+    this.upgradePrompt.setVisible(true).setPosition(WORLD_WIDTH / 2, panelY + 140).setText("CHOOSE A PERK  ·  CLICK TO VOTE");
+
+    this.roundPanel.fillStyle(0x07131d, 0.62);
     this.roundPanel.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    drawHudPanel(this.roundPanel, panelX, panelY, panelWidth, panelHeight, 12);
-    this.roundPanel.lineStyle(1, HUD_COLORS.lineSoft, 0.16);
-    this.roundPanel.lineBetween(panelX + 36, panelY + 112, panelX + panelWidth - 36, panelY + 112);
-    this.roundPanel.fillStyle(HUD_COLORS.gold, 0.95);
-    this.roundPanel.fillRoundedRect(panelX + 316, panelY + 104, panelWidth - 632, 6, 3);
+
+    const total = Math.max(1, (this.round.nextRoundStartsAt ?? now) - this.round.endsAt);
+    const remainFrac = Phaser.Math.Clamp(nextRoundIn / total, 0, 1);
+    const secondsLeft = Math.ceil(nextRoundIn / 1000);
+    const urgent = nextRoundIn <= 5000;
+    // pulse 0..1 only while urgent, otherwise steady
+    const pulse = urgent ? 0.5 + 0.5 * Math.sin(now / 90) : 0;
+    const barColor = urgent ? HUD_COLORS.red : nextRoundIn <= 8000 ? HUD_COLORS.gold : HUD_COLORS.green;
+
+    // panel border flashes red as time runs out
+    drawHudPanel(this.roundPanel, panelX, panelY, panelWidth, panelHeight, 16);
+    if (urgent) {
+      this.roundPanel.lineStyle(3 + pulse * 3, 0xff5d5d, 0.3 + pulse * 0.5);
+      this.roundPanel.strokeRoundedRect(panelX - 2, panelY - 2, panelWidth + 4, panelHeight + 4, 18);
+    }
+
+    // shrinking countdown bar
+    const barWidth = panelWidth - 120;
+    const barX = WORLD_WIDTH / 2 - barWidth / 2;
+    const barY = panelY + 118;
+    this.roundPanel.fillStyle(0x07131d, 0.55);
+    this.roundPanel.fillRoundedRect(barX, barY, barWidth, 7, 4);
+    this.roundPanel.fillStyle(barColor, urgent ? 0.7 + pulse * 0.3 : 0.95);
+    this.roundPanel.fillRoundedRect(barX, barY, Math.max(6, barWidth * remainFrac), 7, 4);
+
+    // big prominent seconds counter, top-right of panel
+    const cx = panelX + panelWidth - 62;
+    const cy = panelY + 46;
+    this.waveCountdown
+      .setVisible(true)
+      .setPosition(cx, cy)
+      .setText(`${secondsLeft}`)
+      .setColor(urgent ? "#ff6b6b" : "#ffe6a3")
+      .setScale(urgent ? 1 + pulse * 0.22 : 1);
+
     this.renderUpgradeCards(this.round.upgradeOptions ?? []);
   }
 
@@ -504,21 +590,50 @@ class GalleryScene extends Phaser.Scene {
 
       const rect = upgradeCardRect(i, options.length);
       const isSelected = selected === option.kind;
-      this.roundPanel.fillStyle(isSelected ? 0x183a2d : HUD_COLORS.panelAlt, 0.96);
-      this.roundPanel.lineStyle(isSelected ? 4 : 2, isSelected ? HUD_COLORS.green : HUD_COLORS.lineSoft, isSelected ? 0.98 : 0.34);
-      this.roundPanel.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, 8);
-      this.roundPanel.strokeRoundedRect(rect.x, rect.y, rect.width, rect.height, 8);
-      this.roundPanel.fillStyle(isSelected ? HUD_COLORS.green : HUD_COLORS.line, isSelected ? 0.24 : 0.14);
-      this.roundPanel.fillRoundedRect(rect.x + 6, rect.y + 6, rect.width - 12, 34, 6);
-      this.roundPanel.lineStyle(1, HUD_COLORS.white, 0.12);
-      this.roundPanel.lineBetween(rect.x + 18, rect.y + rect.height - 42, rect.x + rect.width - 18, rect.y + rect.height - 42);
+      const isHovered = this.hoveredUpgradeIndex === i && !isSelected;
+      const lift = isHovered ? 6 : 0;
+      const x = rect.x;
+      const y = rect.y - lift;
+      const w = rect.width;
+      const h = rect.height;
 
-      title.setVisible(true).setPosition(rect.x + rect.width / 2, rect.y + 17).setText(`${option.title}${option.stacks > 0 ? ` ${roman(option.stacks + 1)}` : ""}`);
-      description.setVisible(true).setPosition(rect.x + rect.width / 2, rect.y + 58).setText(option.description);
+      const accent = isSelected ? HUD_COLORS.green : isHovered ? HUD_COLORS.line : HUD_COLORS.lineSoft;
+      const borderAlpha = isSelected ? 0.98 : isHovered ? 0.9 : 0.3;
+      const borderWidth = isSelected ? 4 : isHovered ? 3 : 2;
+      const fillColor = isSelected ? 0x17402e : isHovered ? 0x1f3b4d : HUD_COLORS.panelAlt;
+
+      // drop shadow
+      this.roundPanel.fillStyle(0x07131d, 0.4);
+      this.roundPanel.fillRoundedRect(x + 3, y + 7, w, h, 12);
+      // body
+      this.roundPanel.fillStyle(fillColor, 0.98);
+      this.roundPanel.fillRoundedRect(x, y, w, h, 12);
+      // header strip
+      this.roundPanel.fillStyle(accent, isSelected ? 0.3 : isHovered ? 0.22 : 0.14);
+      this.roundPanel.fillRoundedRect(x + 5, y + 5, w - 10, 42, 9);
+      // outer glow for active/hover
+      if (isSelected || isHovered) {
+        this.roundPanel.lineStyle(borderWidth + 6, accent, isSelected ? 0.2 : 0.12);
+        this.roundPanel.strokeRoundedRect(x - 2, y - 2, w + 4, h + 4, 14);
+      }
+      this.roundPanel.lineStyle(borderWidth, accent, borderAlpha);
+      this.roundPanel.strokeRoundedRect(x, y, w, h, 12);
+      // divider above the vote pill
+      this.roundPanel.lineStyle(1, HUD_COLORS.white, 0.12);
+      this.roundPanel.lineBetween(x + 20, y + h - 46, x + w - 20, y + h - 46);
+      // vote pill
+      const voteCount = this.round?.upgradeVotes?.[option.kind] ?? 0;
+      this.roundPanel.fillStyle(0x07131d, 0.5);
+      this.roundPanel.lineStyle(1, accent, isSelected ? 0.6 : 0.3);
+      this.roundPanel.fillRoundedRect(x + w / 2 - 48, y + h - 36, 96, 26, 11);
+      this.roundPanel.strokeRoundedRect(x + w / 2 - 48, y + h - 36, 96, 26, 11);
+
+      title.setVisible(true).setPosition(x + w / 2, y + 26).setText(`${option.title}${option.stacks > 0 ? ` ${roman(option.stacks + 1)}` : ""}`);
+      description.setVisible(true).setPosition(x + w / 2, y + 64).setText(option.description);
       votes
         .setVisible(true)
-        .setPosition(rect.x + rect.width / 2, rect.y + rect.height - 17)
-        .setText(`${this.round?.upgradeVotes?.[option.kind] ?? 0} vote${(this.round?.upgradeVotes?.[option.kind] ?? 0) === 1 ? "" : "s"}`);
+        .setPosition(x + w / 2, y + h - 23)
+        .setText(`${voteCount} vote${voteCount === 1 ? "" : "s"}`);
     }
   }
 
@@ -787,6 +902,159 @@ class GalleryScene extends Phaser.Scene {
     });
   }
 
+  private spawnStreakCelebration(streak: number, x: number, y: number) {
+    const tier = streak >= 20 ? 3 : streak >= 15 ? 2 : streak >= 10 ? 1 : 0;
+    const palette = [
+      { text: "#ffdf91", accent: 0xffc857, flair: "NICE!" },
+      { text: "#ffce7a", accent: 0xffa23e, flair: "HEATING UP" },
+      { text: "#ffb08a", accent: 0xff6b3d, flair: "ON FIRE!" },
+      { text: "#ff9bb0", accent: 0xff3b5c, flair: "UNSTOPPABLE!" }
+    ][tier];
+
+    const ring = this.add.circle(x, y, 24, palette.accent, 0).setStrokeStyle(6, palette.accent, 0.95).setDepth(93);
+    this.tweens.add({
+      targets: ring,
+      radius: 118 + tier * 26,
+      alpha: 0,
+      duration: 520,
+      ease: "cubic.out",
+      onComplete: () => ring.destroy()
+    });
+
+    for (let i = 0; i < 14 + tier * 6; i += 1) {
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.95;
+      const dist = 40 + Math.random() * (90 + tier * 34);
+      const spark = this.add.circle(x, y, 3 + Math.random() * 4, palette.accent, 1).setDepth(94);
+      this.tweens.add({
+        targets: spark,
+        x: x + Math.cos(angle) * dist,
+        y: y + Math.sin(angle) * dist - 28,
+        alpha: 0,
+        scale: { from: 1.2, to: 0.2 },
+        duration: 460 + Math.random() * 320,
+        ease: "quad.out",
+        onComplete: () => spark.destroy()
+      });
+    }
+
+    const bx = Phaser.Math.Clamp(x, 220, WORLD_WIDTH - 220);
+    const by = Phaser.Math.Clamp(y - 96, 120, WORLD_HEIGHT - 220);
+    const label = this.add
+      .text(bx, by, `STREAK ×${streak}`, hudStyle(30 + tier * 6, palette.text, "900"))
+      .setOrigin(0.5)
+      .setDepth(96)
+      .setResolution(2)
+      .setStroke("#07131d", 8)
+      .setShadow(0, 4, "#07131d", 6, true, true)
+      .setScale(0.4)
+      .setAlpha(0);
+    const flair = this.add
+      .text(bx, by + 28 + tier * 3, palette.flair, hudStyle(15 + tier * 2, palette.text, "900"))
+      .setOrigin(0.5)
+      .setDepth(96)
+      .setResolution(2)
+      .setStroke("#07131d", 6)
+      .setAlpha(0);
+
+    this.tweens.add({ targets: label, scale: { from: 0.4, to: 1 }, alpha: 1, duration: 220, ease: "back.out" });
+    this.tweens.add({ targets: flair, alpha: 1, y: `+=6`, duration: 260, delay: 120, ease: "quad.out" });
+    this.tweens.add({
+      targets: [label, flair],
+      alpha: 0,
+      y: `-=26`,
+      delay: 720,
+      duration: 420,
+      ease: "quad.in",
+      onComplete: () => {
+        label.destroy();
+        flair.destroy();
+      }
+    });
+
+    this.cameras.main.shake(140 + tier * 40, 0.002 + tier * 0.001);
+    this.sfx.streak(tier);
+  }
+
+  private spawnWaveClearCelebration(wave: number) {
+    const cx = WORLD_WIDTH / 2;
+    const cy = WORLD_HEIGHT / 2;
+
+    const flash = this.add.circle(cx, cy, 60, 0xfff5c2, 0.5).setDepth(97);
+    this.tweens.add({
+      targets: flash,
+      radius: 760,
+      alpha: 0,
+      duration: 540,
+      ease: "cubic.out",
+      onComplete: () => flash.destroy()
+    });
+
+    const rays = this.add.graphics().setDepth(96);
+    rays.lineStyle(6, 0xffdf91, 0.55);
+    for (let i = 0; i < 24; i += 1) {
+      const a = (Math.PI * 2 * i) / 24;
+      rays.lineBetween(cx + Math.cos(a) * 40, cy + Math.sin(a) * 40, cx + Math.cos(a) * 480, cy + Math.sin(a) * 480);
+    }
+    this.tweens.add({
+      targets: rays,
+      alpha: { from: 0.85, to: 0 },
+      angle: 16,
+      duration: 900,
+      ease: "quad.out",
+      onComplete: () => rays.destroy()
+    });
+
+    const colors = [0xffc857, 0xff6b3d, 0x78d66f, 0x35b7e8, 0xf25f5c, 0xfff5c2];
+    for (let i = 0; i < 90; i += 1) {
+      const px = Math.random() * WORLD_WIDTH;
+      const py = -40 - Math.random() * 220;
+      const conf = this.add
+        .rectangle(px, py, 8 + Math.random() * 6, 12 + Math.random() * 8, colors[i % colors.length], 1)
+        .setDepth(95);
+      conf.rotation = Math.random() * Math.PI;
+      this.tweens.add({
+        targets: conf,
+        y: WORLD_HEIGHT + 60,
+        x: px + (Math.random() - 0.5) * 160,
+        rotation: conf.rotation + (Math.random() - 0.5) * 10,
+        duration: 1700 + Math.random() * 1200,
+        delay: Math.random() * 400,
+        ease: "sine.in",
+        onComplete: () => conf.destroy()
+      });
+      this.tweens.add({
+        targets: conf,
+        scaleX: { from: 1, to: 0.35 },
+        yoyo: true,
+        repeat: -1,
+        duration: 240 + Math.random() * 160
+      });
+    }
+
+    const stamp = this.add
+      .text(cx, cy - 214, `WAVE ${wave} SURVIVED`, hudStyle(46, "#fff5c2", "900"))
+      .setOrigin(0.5)
+      .setDepth(99)
+      .setResolution(2)
+      .setStroke("#07131d", 10)
+      .setShadow(0, 5, "#07131d", 8, true, true)
+      .setScale(1.8)
+      .setAlpha(0);
+    this.tweens.add({ targets: stamp, scale: 1, alpha: 1, duration: 260, ease: "back.out" });
+    this.tweens.add({
+      targets: stamp,
+      alpha: 0,
+      y: `-=20`,
+      delay: 1500,
+      duration: 500,
+      ease: "quad.in",
+      onComplete: () => stamp.destroy()
+    });
+
+    this.cameras.main.flash(200, 255, 245, 194, false);
+    this.sfx.waveClear();
+  }
+
   private spawnNukeFx(x: number, y: number) {
     const flash = this.add.circle(x, y, 80, 0xfff5c2, 0.92).setDepth(94);
     const shockwave = this.add.circle(x, y, 120, 0xf25f5c, 0).setStrokeStyle(12, 0xfff5c2, 0.98).setDepth(93);
@@ -953,6 +1221,26 @@ class GalleryScene extends Phaser.Scene {
     point.x = Phaser.Math.Clamp(point.x, 0, WORLD_WIDTH);
     point.y = Phaser.Math.Clamp(point.y, 0, WORLD_HEIGHT);
     return point;
+  }
+
+  private setSelectingCursor(selecting: boolean) {
+    if (selecting === this.lastCursorSelecting) {
+      return;
+    }
+    this.lastCursorSelecting = selecting;
+    this.input.setDefaultCursor(selecting ? "pointer" : "none");
+  }
+
+  private upgradeIndexAtPointer(pointer: Phaser.Input.Pointer): number {
+    const options = this.round?.upgradeOptions ?? [];
+    const point = this.pointerToWorldPoint(pointer);
+    for (let i = 0; i < options.length; i += 1) {
+      const rect = upgradeCardRect(i, options.length);
+      if (point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   private syncPowerups(snapshot: PowerupSnapshot[]) {
@@ -1893,6 +2181,25 @@ class SoundFx {
     this.tone(260, 0.09, "square", 0.04, 0.09);
   }
 
+  streak(tier: number) {
+    this.unlock();
+    const base = 440 + tier * 55;
+    this.tone(base, 0.09, "triangle", 0.06);
+    this.tone(base * 1.25, 0.1, "triangle", 0.055, 0.06);
+    this.tone(base * 1.5, 0.14, "sine", 0.05, 0.13);
+    if (tier >= 2) {
+      this.tone(base * 2, 0.16, "sine", 0.045, 0.2);
+    }
+  }
+
+  waveClear() {
+    this.unlock();
+    const notes = [523, 659, 784, 1047];
+    notes.forEach((note, index) => this.tone(note, 0.28, "triangle", 0.06, index * 0.09));
+    this.tone(262, 0.5, "sine", 0.05);
+    this.noise(0.2, 0.06, 900, 0.02);
+  }
+
   roundStart() {
     this.unlock();
     this.tone(330, 0.1, "triangle", 0.055);
@@ -2188,18 +2495,18 @@ function getActivePowerups(player: PlayerSnapshot | undefined, now: number) {
 function hudStyle(fontSize: number, color: string, fontStyle: string): Phaser.Types.GameObjects.Text.TextStyle {
   return {
     color,
-    fontFamily: "Inter, Arial, sans-serif",
+    fontFamily: GAME_FONT,
     fontSize: `${fontSize}px`,
     fontStyle,
     stroke: "#07131d",
-    strokeThickness: 3
+    strokeThickness: Math.max(2, Math.round(fontSize * 0.11))
   };
 }
 
 function hudPlainStyle(fontSize: number, color: string, fontStyle: string): Phaser.Types.GameObjects.Text.TextStyle {
   return {
     color,
-    fontFamily: "Inter, Arial, sans-serif",
+    fontFamily: GAME_FONT,
     fontSize: `${fontSize}px`,
     fontStyle
   };
@@ -2283,13 +2590,13 @@ function weaponFrameForAim(aimX: number): number {
 }
 
 function upgradeCardRect(index: number, total: number): { x: number; y: number; width: number; height: number } {
-  const width = 238;
-  const height = 132;
-  const gap = 22;
+  const width = 250;
+  const height = 150;
+  const gap = 24;
   const totalWidth = total * width + Math.max(0, total - 1) * gap;
   return {
     x: WORLD_WIDTH / 2 - totalWidth / 2 + index * (width + gap),
-    y: WORLD_HEIGHT / 2 - 40,
+    y: WORLD_HEIGHT / 2 - 26,
     width,
     height
   };
@@ -2306,13 +2613,39 @@ function formatClock(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function startGame() {
+const GAME_FONT = '"Baloo 2", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif';
+
+async function loadGameFonts() {
+  if (!("fonts" in document)) {
+    return;
+  }
+  try {
+    await Promise.all([
+      document.fonts.load('800 32px "Baloo 2"'),
+      document.fonts.load('700 24px "Baloo 2"'),
+      document.fonts.load('600 16px "Baloo 2"'),
+      document.fonts.load('500 14px "Baloo 2"')
+    ]);
+    await document.fonts.ready;
+  } catch {
+    // Fall back to system fonts if the webfont fails to load.
+  }
+}
+
+async function startGame() {
+  await loadGameFonts();
   game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: "app",
     backgroundColor: "#82b8d8",
     width: CANVAS_WIDTH,
     height: CANVAS_HEIGHT,
+    render: {
+      antialias: true,
+      antialiasGL: true,
+      roundPixels: false,
+      powerPreference: "high-performance"
+    },
     scale: {
       mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,

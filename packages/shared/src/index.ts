@@ -35,7 +35,14 @@ export type GameMode = "pve" | "pvp";
 export type RoomFilter = "all" | GameMode;
 export type TargetKind = "cluck" | "runner" | "bonus" | "giant" | "royal";
 export type PowerupKind = "machine_gun" | "double_points" | "nuke";
-export type UpgradeKind = "rapid_fire" | "steady_hands" | "overdrive" | "score_surge";
+export type UpgradeKind =
+  | "rapid_fire"
+  | "steady_hands"
+  | "overdrive"
+  | "score_surge"
+  | "dead_eye"
+  | "hair_trigger"
+  | "iron_will";
 
 export type TargetSnapshot = {
   id: string;

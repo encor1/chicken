@@ -89,7 +89,8 @@ type GameRoom = {
 
 const BASE_TEAM_MORALE = 30;
 const EMPTY_ROOM_TTL_MS = 60_000;
-const PVE_INTERMISSION_MS = 4500;
+const PVE_INTERMISSION_MS = 15000;
+const IRON_WILL_MORALE_BONUS = 12;
 const OVERDRIVE_DURATION_BONUS_MS = 750;
 const TARGET_SPAWN_INTERVAL_MS = 380;
 const INITIAL_TARGET_FILL_RATIO = 0.58;
@@ -98,22 +99,37 @@ const UPGRADE_CATALOG: Record<UpgradeKind, Omit<CoopUpgradeSnapshot, "stacks">> 
   rapid_fire: {
     kind: "rapid_fire",
     title: "Rapid Fire",
-    description: "Shots cool down 6% faster"
+    description: "Trigger cools down 6% faster"
   },
   steady_hands: {
     kind: "steady_hands",
     title: "Steady Hands",
-    description: "Streak bonus can climb higher"
+    description: "Streak bonus climbs +4 higher"
   },
   overdrive: {
     kind: "overdrive",
     title: "Overdrive",
-    description: "+0.75s earned machine gun duration"
+    description: "+0.75s machine-gun rampage time"
   },
   score_surge: {
     kind: "score_surge",
     title: "Score Surge",
-    description: "Targets are worth 10% more"
+    description: "Every target pays out +10%"
+  },
+  dead_eye: {
+    kind: "dead_eye",
+    title: "Dead Eye",
+    description: "Shots snap to targets from further out"
+  },
+  hair_trigger: {
+    kind: "hair_trigger",
+    title: "Hair Trigger",
+    description: "Machine gun spins up 1 hit sooner"
+  },
+  iron_will: {
+    kind: "iron_will",
+    title: "Iron Will",
+    description: `+${IRON_WILL_MORALE_BONUS} morale, now and forever`
   }
 };
 
@@ -394,7 +410,7 @@ function handleShot(room: GameRoom, player: Player, x: number, y: number) {
         endRound(room, now);
       }
     }
-    if (room.round.state === "active" && !machineGunActive && player.streak >= MACHINE_GUN_STREAK_THRESHOLD) {
+    if (room.round.state === "active" && !machineGunActive && player.streak >= getMachineGunThreshold(room)) {
       activateMachineGun(room, player, now);
     }
   } else {
@@ -420,7 +436,7 @@ function findHit(room: GameRoom, x: number, y: number): Target | null {
   let bestDistance = Number.POSITIVE_INFINITY;
 
   for (const target of room.targets.values()) {
-    const leniency = target.radius + 8;
+    const leniency = target.radius + getHitLeniency(room);
     const dist = distanceSquared({ x, y }, target);
     if (dist <= leniency * leniency && dist < bestDistance) {
       best = target;
@@ -654,6 +670,10 @@ function applyDraftWinner(room: GameRoom): CoopUpgradeSnapshot | undefined {
   const votes = countUpgradeVotes(room);
   const winner = [...options].sort((a, b) => (votes[b.kind] ?? 0) - (votes[a.kind] ?? 0))[0];
   room.coopRun.upgrades[winner.kind] = (room.coopRun.upgrades[winner.kind] ?? 0) + 1;
+  if (winner.kind === "iron_will") {
+    room.coopRun.maxMorale += IRON_WILL_MORALE_BONUS;
+    room.coopRun.morale = Math.min(room.coopRun.maxMorale, room.coopRun.morale + IRON_WILL_MORALE_BONUS);
+  }
   room.coopRun.lastAppliedUpgrade = createUpgradeSnapshot(room, winner.kind);
   return room.coopRun.lastAppliedUpgrade;
 }
@@ -701,6 +721,14 @@ function getMachineGunDuration(room: GameRoom) {
 
 function getScoreMultiplier(room: GameRoom) {
   return 1 + getUpgradeStacks(room, "score_surge") * 0.1;
+}
+
+function getHitLeniency(room: GameRoom) {
+  return 8 + getUpgradeStacks(room, "dead_eye") * 6;
+}
+
+function getMachineGunThreshold(room: GameRoom) {
+  return Math.max(4, MACHINE_GUN_STREAK_THRESHOLD - getUpgradeStacks(room, "hair_trigger"));
 }
 
 function damageTeamMorale(room: GameRoom, target: Target, now: number) {
@@ -759,7 +787,7 @@ function getDifficulty(room: GameRoom, wave: number) {
   if (room.mode === "pvp") {
     return 1;
   }
-  return Number((0.82 + (wave - 1) * 0.08).toFixed(2));
+  return Number(Math.min(1.5, 0.8 + (wave - 1) * 0.055).toFixed(2));
 }
 
 function getTargetBudget(room: GameRoom, wave: number) {
@@ -881,14 +909,14 @@ function spawnTarget(room: GameRoom, initial: boolean) {
   const isRoyal = kind === "royal";
   const speedMultiplier = getDifficulty(room, room.round.wave);
   const baseSpeed = isGiant
-    ? 95 + Math.random() * 45
+    ? 72 + Math.random() * 32
     : isRoyal
-      ? 330 + Math.random() * 80
+      ? 235 + Math.random() * 55
       : kind === "bonus"
-      ? 300 + Math.random() * 110
+      ? 205 + Math.random() * 70
       : kind === "runner"
-        ? 230 + Math.random() * 90
-        : 150 + Math.random() * 80;
+        ? 165 + Math.random() * 55
+        : 105 + Math.random() * 50;
   const speed = baseSpeed * speedMultiplier;
   const radius = isGiant ? 78 : isRoyal ? 48 : kind === "bonus" ? 18 : kind === "runner" ? 23 : 30;
   const verticalBounds = getTargetVerticalBounds(radius);
