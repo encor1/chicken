@@ -4,10 +4,6 @@ import basicChickenUrl from "./assets/chickens/basic.png";
 import bonusChickenUrl from "./assets/chickens/bonus.png";
 import giantChickenUrl from "./assets/chickens/giant.png";
 import speedyChickenUrl from "./assets/chickens/speedy.png";
-import bonusBadgeUrl from "./assets/badges/sign-bonus.png";
-import epicBadgeUrl from "./assets/badges/sign-epic.png";
-import normalBadgeUrl from "./assets/badges/sign-normal.png";
-import rareBadgeUrl from "./assets/badges/sign-rare.png";
 import activeSignUrl from "./assets/hud/active-sign.png";
 import ammoBoxUrl from "./assets/hud/ammo-box.png";
 import eventHeaderUrl from "./assets/hud/event-header.png";
@@ -53,10 +49,6 @@ const SPEEDY_CHICKEN_KEY = "chicken-speedy";
 const BONUS_CHICKEN_KEY = "chicken-bonus";
 const BOSS_CHICKEN_KEY = "chicken-boss";
 const GIANT_CHICKEN_KEY = "chicken-giant";
-const TARGET_BADGE_NORMAL_KEY = "target-badge-normal";
-const TARGET_BADGE_RARE_KEY = "target-badge-rare";
-const TARGET_BADGE_EPIC_KEY = "target-badge-epic";
-const TARGET_BADGE_BONUS_KEY = "target-badge-bonus";
 const SKYBOX_KEY = "skybox";
 const HUD_ACTIVE_SIGN_KEY = "hud-active-sign";
 const HUD_AMMO_BOX_KEY = "hud-ammo-box";
@@ -92,7 +84,6 @@ const HUD_COLORS = {
 };
 
 type HudEventKind = PowerupKind | "score" | "taunt";
-type TargetBadgeVariant = "normal" | "rare" | "epic" | "bonus";
 type WeaponKind = "shotgun" | "machine_gun";
 
 type HudEvent = {
@@ -288,10 +279,6 @@ class GalleryScene extends Phaser.Scene {
     this.load.spritesheet(BONUS_CHICKEN_KEY, bonusChickenUrl, { frameWidth: 364, frameHeight: 246 });
     this.load.spritesheet(BOSS_CHICKEN_KEY, bossChickenUrl, { frameWidth: 364, frameHeight: 320 });
     this.load.spritesheet(GIANT_CHICKEN_KEY, giantChickenUrl, { frameWidth: 435, frameHeight: 439 });
-    this.load.image(TARGET_BADGE_NORMAL_KEY, normalBadgeUrl);
-    this.load.image(TARGET_BADGE_RARE_KEY, rareBadgeUrl);
-    this.load.image(TARGET_BADGE_EPIC_KEY, epicBadgeUrl);
-    this.load.image(TARGET_BADGE_BONUS_KEY, bonusBadgeUrl);
     this.load.spritesheet(SHOTGUN_WEAPON_KEY, shotgunWeaponUrl, { frameWidth: SHOTGUN_WEAPON_FRAME.width, frameHeight: SHOTGUN_WEAPON_FRAME.height });
     this.load.spritesheet(MACHINE_GUN_WEAPON_KEY, machineGunWeaponUrl, {
       frameWidth: MACHINE_GUN_WEAPON_FRAME.width,
@@ -2072,7 +2059,6 @@ class TargetView {
   private readonly group: Phaser.GameObjects.Container;
   private readonly shadow: Phaser.GameObjects.Ellipse;
   private readonly sprite: Phaser.GameObjects.Sprite;
-  private readonly badge: TargetBadge;
   private target: TargetSnapshot;
 
   constructor(scene: Phaser.Scene, snapshot: TargetSnapshot) {
@@ -2084,18 +2070,8 @@ class TargetView {
     this.sprite.setDisplaySize(displayWidth, displayWidth * spriteConfig.aspectRatio);
     this.sprite.play(spriteConfig.animationKey);
     this.sprite.anims.setProgress((snapshot.flap % (Math.PI * 2)) / (Math.PI * 2));
-    const signY = Math.max(snapshot.radius + 18, this.sprite.displayHeight * 0.46 + 16);
-    this.badge = new TargetBadge(scene, {
-      x: 0,
-      y: signY,
-      value: snapshot.points,
-      variant: targetBadgeVariant(snapshot.kind),
-      icon: targetBadgeIcon(snapshot.kind),
-      width: targetBadgeWidth(snapshot)
-    });
-    this.group = scene.add.container(snapshot.x, snapshot.y, [this.shadow, this.sprite, this.badge.container]).setDepth(snapshot.kind === "giant" || snapshot.kind === "royal" ? 45 : 20);
+    this.group = scene.add.container(snapshot.x, snapshot.y, [this.shadow, this.sprite]).setDepth(snapshot.kind === "giant" || snapshot.kind === "royal" ? 45 : 20);
     this.group.scaleX = snapshot.facing;
-    this.badge.setFacing(snapshot.facing);
 
     if (snapshot.kind === "royal") {
       const aura = scene.add.circle(0, 0, snapshot.radius * 1.25, 0xffdf91, 0).setStrokeStyle(5, 0xffdf91, 0.5);
@@ -2108,7 +2084,6 @@ class TargetView {
 
   applySnapshot(snapshot: TargetSnapshot) {
     this.target = snapshot;
-    this.badge.setValue(snapshot.points);
   }
 
   update(delta: number) {
@@ -2116,242 +2091,11 @@ class TargetView {
     this.group.x = Phaser.Math.Linear(this.group.x, this.target.x, t);
     this.group.y = Phaser.Math.Linear(this.group.y, this.target.y, t);
     this.group.scaleX = this.target.facing;
-    this.badge.setFacing(this.target.facing);
   }
 
   destroy() {
-    this.badge.destroy();
     this.group.destroy(true);
   }
-}
-
-class TargetBadge {
-  readonly container: Phaser.GameObjects.Container;
-  private readonly scene: Phaser.Scene;
-  private readonly sign: Phaser.GameObjects.Image;
-  private readonly faceplate: Phaser.GameObjects.Graphics;
-  private readonly icon: Phaser.GameObjects.Graphics;
-  private readonly label: Phaser.GameObjects.Text;
-  private readonly glow?: Phaser.GameObjects.Ellipse;
-  private readonly variant: TargetBadgeVariant;
-  private readonly iconKind: "coin" | "star" | "heart";
-  private readonly displayWidth: number;
-  private readonly displayHeight: number;
-
-  constructor(
-    scene: Phaser.Scene,
-    config: {
-      x: number;
-      y: number;
-      value: number;
-      variant: TargetBadgeVariant;
-      icon: "coin" | "star" | "heart";
-      width: number;
-    }
-  ) {
-    this.scene = scene;
-    this.variant = config.variant;
-    this.iconKind = config.icon;
-    this.displayWidth = config.width;
-    const textureKey = targetBadgeTexture(config.variant);
-    const source = scene.textures.get(textureKey).getSourceImage() as HTMLImageElement;
-    this.displayHeight = this.displayWidth * (source.height / source.width);
-    const faceplateStyle = targetBadgeFaceplate(config.variant);
-
-    this.glow =
-      config.variant === "normal"
-        ? undefined
-        : scene.add.ellipse(0, this.displayHeight * 0.08, this.displayWidth * 1.06, this.displayHeight * 0.64, faceplateStyle.glowColor, 0.16);
-    this.sign = scene.add.image(0, 0, textureKey).setDisplaySize(this.displayWidth, this.displayHeight);
-    this.faceplate = scene.add.graphics();
-    this.icon = scene.add.graphics();
-    this.label = scene.add
-      .text(this.displayWidth * 0.1, this.displayHeight * 0.12, "", hudStyle(targetBadgeFontSize(config.variant, this.displayWidth), "#fff8e5", "900"))
-      .setOrigin(0.5);
-    this.label.setResolution(2);
-    this.label.setStroke("#43220f", Math.max(4, Math.round(this.displayWidth * 0.045)));
-
-    const children: Phaser.GameObjects.GameObject[] = this.glow ? [this.glow, this.sign, this.faceplate, this.icon, this.label] : [this.sign, this.faceplate, this.icon, this.label];
-    this.container = scene.add.container(config.x, config.y, children);
-    this.drawFaceplate();
-    this.drawIcon();
-    this.setValue(config.value);
-    this.addIdleMotion();
-  }
-
-  setValue(value: number) {
-    this.label.setText(`${value}`);
-  }
-
-  setFacing(facing: TargetSnapshot["facing"]) {
-    this.container.scaleX = facing;
-  }
-
-  destroy() {
-    this.scene.tweens.killTweensOf(this.container);
-    if (this.glow) {
-      this.scene.tweens.killTweensOf(this.glow);
-    }
-  }
-
-  private addIdleMotion() {
-    this.container.angle = Phaser.Math.FloatBetween(-1.6, 1.6);
-    this.scene.tweens.add({
-      targets: this.container,
-      y: this.container.y + Phaser.Math.FloatBetween(2, 4),
-      angle: -this.container.angle,
-      duration: Phaser.Math.Between(900, 1250),
-      ease: "Sine.inOut",
-      yoyo: true,
-      repeat: -1
-    });
-
-    if (!this.glow) {
-      return;
-    }
-
-    this.scene.tweens.add({
-      targets: this.glow,
-      alpha: this.variant === "epic" ? 0.32 : 0.24,
-      scaleX: 1.08,
-      scaleY: 1.18,
-      duration: 950,
-      ease: "Sine.inOut",
-      yoyo: true,
-      repeat: -1
-    });
-  }
-
-  private drawFaceplate() {
-    const style = targetBadgeFaceplate(this.variant);
-    const width = this.displayWidth * 0.72;
-    const height = this.displayHeight * 0.34;
-    const x = -this.displayWidth * 0.07;
-    const y = this.displayHeight * 0.12;
-    this.faceplate.clear();
-    this.faceplate.fillStyle(0x32180c, 0.28);
-    this.faceplate.fillRoundedRect(x - width / 2 + 2, y - height / 2 + 3, width, height, 7);
-    this.faceplate.fillStyle(style.fill, 0.96);
-    this.faceplate.lineStyle(Math.max(2, this.displayWidth * 0.018), style.stroke, 0.9);
-    this.faceplate.fillRoundedRect(x - width / 2, y - height / 2, width, height, 7);
-    this.faceplate.strokeRoundedRect(x - width / 2, y - height / 2, width, height, 7);
-    this.faceplate.lineStyle(1, 0xffffff, 0.16);
-    this.faceplate.lineBetween(x - width * 0.39, y - height * 0.28, x + width * 0.39, y - height * 0.28);
-  }
-
-  private drawIcon() {
-    const x = -this.displayWidth * 0.3;
-    const y = this.displayHeight * 0.12;
-    const radius = this.displayWidth * 0.105;
-    this.icon.clear();
-
-    if (this.iconKind === "heart") {
-      this.icon.fillStyle(0xff4f4f, 1);
-      this.icon.lineStyle(Math.max(2, this.displayWidth * 0.018), 0x7d1720, 0.95);
-      this.icon.fillCircle(x - radius * 0.35, y - radius * 0.18, radius * 0.54);
-      this.icon.fillCircle(x + radius * 0.35, y - radius * 0.18, radius * 0.54);
-      this.icon.fillTriangle(x - radius * 0.94, y, x + radius * 0.94, y, x, y + radius * 1.15);
-      this.icon.strokeCircle(x - radius * 0.35, y - radius * 0.18, radius * 0.54);
-      this.icon.strokeCircle(x + radius * 0.35, y - radius * 0.18, radius * 0.54);
-      return;
-    }
-
-    this.icon.fillStyle(0x5a2a0f, 0.55);
-    this.icon.fillCircle(x + 1.5, y + 2, radius * 1.06);
-    this.icon.fillStyle(0xffc84f, 1);
-    this.icon.lineStyle(Math.max(2, this.displayWidth * 0.018), 0x8c5511, 0.96);
-    this.icon.fillCircle(x, y, radius);
-    this.icon.strokeCircle(x, y, radius);
-    this.icon.fillStyle(0xfff0a6, 0.72);
-    this.icon.fillCircle(x - radius * 0.26, y - radius * 0.3, radius * 0.24);
-
-    if (this.iconKind === "star") {
-      this.icon.fillStyle(0xfff068, 1);
-      this.icon.lineStyle(1.5, 0x9d6214, 0.95);
-      this.icon.fillPoints(starPoints(x, y, radius * 0.66, radius * 0.28), true);
-      this.icon.strokePoints(starPoints(x, y, radius * 0.66, radius * 0.28), true);
-    }
-  }
-}
-
-function targetBadgeVariant(kind: TargetSnapshot["kind"]): TargetBadgeVariant {
-  if (kind === "royal") {
-    return "epic";
-  }
-  if (kind === "giant") {
-    return "rare";
-  }
-  if (kind === "bonus") {
-    return "bonus";
-  }
-  return "normal";
-}
-
-function targetBadgeIcon(kind: TargetSnapshot["kind"]): "coin" | "star" | "heart" {
-  if (kind === "royal" || kind === "giant") {
-    return "star";
-  }
-  if (kind === "bonus") {
-    return "heart";
-  }
-  return "coin";
-}
-
-function targetBadgeTexture(variant: TargetBadgeVariant) {
-  if (variant === "rare") {
-    return TARGET_BADGE_RARE_KEY;
-  }
-  if (variant === "epic") {
-    return TARGET_BADGE_EPIC_KEY;
-  }
-  if (variant === "bonus") {
-    return TARGET_BADGE_BONUS_KEY;
-  }
-  return TARGET_BADGE_NORMAL_KEY;
-}
-
-function targetBadgeFaceplate(variant: TargetBadgeVariant) {
-  if (variant === "rare") {
-    return { fill: 0xb66a1b, stroke: 0xffdd6a, glowColor: 0xffd45a };
-  }
-  if (variant === "epic") {
-    return { fill: 0x5f2a78, stroke: 0xffd25c, glowColor: 0xb64cff };
-  }
-  if (variant === "bonus") {
-    return { fill: 0x8e4a1e, stroke: 0xffd45a, glowColor: 0xff6d6d };
-  }
-  return { fill: 0x7b401c, stroke: 0xd78a32, glowColor: 0xffc857 };
-}
-
-function targetBadgeFontSize(variant: TargetBadgeVariant, width: number) {
-  const base = variant === "epic" ? 20 : variant === "rare" ? 19 : 18;
-  return Math.round(Phaser.Math.Clamp(width / 4.8, 15, base));
-}
-
-function targetBadgeWidth(snapshot: TargetSnapshot) {
-  if (snapshot.kind === "giant") {
-    return 134;
-  }
-  if (snapshot.kind === "royal") {
-    return 122;
-  }
-  if (snapshot.kind === "bonus") {
-    return 86;
-  }
-  if (snapshot.kind === "runner") {
-    return 82;
-  }
-  return 78;
-}
-
-function starPoints(x: number, y: number, outerRadius: number, innerRadius: number) {
-  const points: Phaser.Math.Vector2[] = [];
-  for (let i = 0; i < 10; i += 1) {
-    const radius = i % 2 === 0 ? outerRadius : innerRadius;
-    const angle = -Math.PI / 2 + (i * Math.PI) / 5;
-    points.push(new Phaser.Math.Vector2(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius));
-  }
-  return points;
 }
 
 function createChickenAnimations(scene: Phaser.Scene) {
